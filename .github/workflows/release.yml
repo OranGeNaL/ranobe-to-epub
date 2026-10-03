@@ -78,15 +78,28 @@ jobs:
             [[ "$major" -le 15 ]] || { echo "base macOS too high: $floor"; exit 1; }
           elif [[ "$RUNNER_OS" == "Linux" ]]; then
             glibc=$(ldd --version | head -1)
+            ver=$(echo "$glibc" | grep -oE '[0-9]+\.[0-9]+' | head -1)
             echo "host glibc: $glibc"
-            echo "$glibc" | grep -q "glibc 2.35" || { echo "unexpected glibc: $glibc"; exit 1; }
+            [[ "$ver" == "2.35" ]] || { echo "unexpected glibc version: $ver"; exit 1; }
           fi
 
       - name: Smoke test the binary
         run: |
           bin=$(find dist -maxdepth 1 -type f -name 'ranobelib-epub-*' | head -n 1)
-          [[ -n "$bin" ]] || { echo "no binary produced in dist/"; exit 1; }
-          "$bin" --help > /dev/null 2>&1 && echo "smoke OK: $bin" || { echo "smoke FAILED: $bin"; exit 1; }
+          if [[ -z "$bin" ]]; then
+            echo "::error::no binary produced in dist/; contents:"
+            ls -la dist/
+            exit 1
+          fi
+          echo "smoke: $bin --help"
+          "$bin" --help > smoke.log 2>&1
+          rc=$?
+          if [[ $rc -ne 0 ]]; then
+            echo "::error::smoke test failed (exit $rc); output:"
+            cat smoke.log
+            exit 1
+          fi
+          echo "smoke OK: $bin"
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -102,6 +115,7 @@ jobs:
           name: build-notes-${{ matrix.target }}
           path: |
             build.log
+            smoke.log
             compilation-report.xml
           if-no-files-found: ignore
 
