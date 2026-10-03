@@ -7,12 +7,30 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 DEFAULT_SITE_ID = 3
 DEFAULT_SITE_ORIGIN = "https://ranobelib.me"
 DEFAULT_API_BASE = "https://api.cdnlibs.org/api"
+
+#: Фиксированный набор языков для метаданных (решение 6 design.md).
+LANGUAGE_CODES: tuple[str, ...] = ("ru", "en", "ja", "zh", "ko", "de", "fr", "es", "it", "pt")
+
+#: Человекочитаемые названия языков для интерактивных выборов.
+LANGUAGE_LABELS: dict[str, str] = {
+    "ru": "Русский",
+    "en": "Английский",
+    "ja": "Японский",
+    "zh": "Китайский",
+    "ko": "Корейский",
+    "de": "Немецкий",
+    "fr": "Французский",
+    "es": "Испанский",
+    "it": "Итальянский",
+    "pt": "Португальский",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,11 +57,91 @@ class Book:
     in_language: str | None = None
     age_restriction_id: int | None = None
     age_restriction_label: str | None = None
+    publisher: str | None = None
+    series: str | None = None
+    series_index: int | None = None
 
     @property
     def title(self) -> str:
         """Название для OPF и имени файла: русское при наличии, иначе оригинальное."""
         return self.rus_name or self.name or self.slug_url
+
+
+@dataclass(frozen=True, slots=True)
+class Cover:
+    """Обложка из карусели томов (`GET /manga/{slug_url}/covers`)."""
+
+    id: int
+    order: int
+    label: str
+    url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataOverrides:
+    """Переопределения метаданных (решение 1 design.md).
+
+    Поле со значением `None`/пустой строкой означает «использовать значение из данных
+    сайта»; серия переопределяется только вместе с `series`/`series_index`.
+    """
+
+    title: str | None = None
+    author: str | None = None
+    description: str | None = None
+    language: str | None = None
+    genres: tuple[str, ...] | None = None
+    date: str | None = None
+    publisher: str | None = None
+    series: str | None = None
+    series_index: int | None = None
+
+
+def apply_overrides(book: Book, overrides: MetadataOverrides) -> Book:
+    """Применяет переопределения к `Book`, не трогая незаполненные поля.
+
+    Название записывается в `rus_name`, потому что `Book.title` и имя файла по умолчанию
+    берутся именно от него; дальше ниже по потоку всё уже читает `Book`, и отдельных
+    каналов для переопределений не требуется.
+    """
+    kwargs: dict[str, Any] = {}
+    if overrides.title:
+        kwargs["rus_name"] = overrides.title
+    if overrides.author:
+        kwargs["author"] = overrides.author
+    if overrides.description:
+        kwargs["summary"] = overrides.description
+    if overrides.language:
+        kwargs["in_language"] = overrides.language
+    if overrides.genres:
+        kwargs["genres"] = overrides.genres
+    if overrides.publisher:
+        kwargs["publisher"] = overrides.publisher
+    if overrides.series:
+        kwargs["series"] = overrides.series
+    if overrides.series_index is not None:
+        kwargs["series_index"] = overrides.series_index
+    return replace(book, **kwargs)
+
+
+def resolve_cover_url(
+    book: Book,
+    covers: Iterable[Cover] = (),
+    cover_id: int | None = None,
+    cover_disabled: bool = False,
+) -> str | None:
+    """URL обложки для сборки: отказ → без обложки, выбор → из карусели, иначе с сайта.
+
+    Если `cover_id` задан, но в карусели его нет — возвращается `None` (обложку считать
+    недоступной, а причину фиксирует вызывающий код).
+    """
+    if cover_disabled:
+        return None
+    if cover_id is not None:
+        for cover in covers or ():
+            if cover.id == cover_id:
+                return cover.url
+        return None
+    return book.cover
 
 
 @dataclass(frozen=True, slots=True)

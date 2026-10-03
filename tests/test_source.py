@@ -78,12 +78,53 @@ class TestFetchBook:
 
         assert paths == [f"/api/manga/{SLUG}"]
 
+    async def test_requests_expanded_fields(self) -> None:
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url))
+            return httpx.Response(200, json=load("book.json"))
+
+        source, _ = build_source(handler)
+
+        await source.fetch_book(SLUG)
+
+        params = httpx.QueryParams(seen[0].split("?", 1)[1])
+        assert params.get_list("fields[]") == ["authors", "genres", "summary"]
+
+    async def test_book_has_expanded_metadata(self) -> None:
+        source, _ = build_source(fixture_handler("book.json"))
+
+        book = await source.fetch_book(SLUG)
+
+        assert book.author == "Tappei Nagatsuki"
+        assert book.genres == ("Героическое фэнтези", "Драма")
+        assert book.summary is not None
+
     async def test_not_found(self) -> None:
         body = {"data": {"toast": {"type": "silent", "message": "Not Found"}}}
         source, _ = build_source(lambda r: httpx.Response(404, json=body))
 
         with pytest.raises(BookNotFoundError):
             await source.fetch_book(SLUG)
+
+
+class TestFetchCovers:
+    async def test_covers_are_fetched_and_sorted(self) -> None:
+        source, paths = build_source(fixture_handler("covers.json"))
+
+        covers = await source.fetch_covers(SLUG)
+
+        assert len(covers) == 4
+        assert [cover.order for cover in covers] == [0, 1, 2, 3]
+        assert paths == [f"/api/manga/{SLUG}/covers"]
+
+    async def test_endpoint_error_returns_empty(self) -> None:
+        source, _ = build_source(lambda r: httpx.Response(500, json=load("book.json")))
+
+        covers = await source.fetch_covers(SLUG)
+
+        assert covers == ()
 
 
 class TestFetchChapters:

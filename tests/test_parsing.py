@@ -8,14 +8,17 @@ from typing import Any
 
 import pytest
 
-from ranobelib_epub.models import Book
+from ranobelib_epub.models import Book, Cover
 from ranobelib_epub.source.parsing import (
+    parse_author,
     parse_book,
     parse_branches,
     parse_chapter_content,
     parse_chapters,
     parse_cover,
+    parse_covers,
     parse_status,
+    summary_text,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -84,6 +87,106 @@ class TestParseBook:
         assert parse_status({"id": 1, "label": "Онгоинг"}) == "Онгоинг"
         assert parse_status("Завершена") == "Завершена"
         assert parse_status(None) is None
+
+    def test_author_is_read_from_expanded_fields(self, book_payload: Any) -> None:
+        book = parse_book(book_payload)
+
+        assert book.author == "Tappei Nagatsuki"
+
+    def test_genres_from_expanded_fields(self, book_payload: Any) -> None:
+        book = parse_book(book_payload)
+
+        assert book.genres == ("Героическое фэнтези", "Драма")
+
+    def test_summary_becomes_plain_text(self, book_payload: Any) -> None:
+        book = parse_book(book_payload)
+
+        assert book.summary is not None
+        assert book.summary.startswith("Возвращаясь домой из магазина")
+        assert "Юноша ждёт встречи" in book.summary
+        assert "\n" not in book.summary
+
+    def test_missing_author_falls_back_to_plain_field(self) -> None:
+        book = parse_book(
+            {"data": {"id": 1, "slug_url": "1--x", "author": "Классик", "authors": None}}
+        )
+
+        assert book.author == "Классик"
+
+
+class TestParseAuthor:
+    def test_single_author(self) -> None:
+        assert parse_author([{"name": "Tappei Nagatsuki"}]) == "Tappei Nagatsuki"
+
+    def test_multiple_authors_joined(self) -> None:
+        raw = [{"name": "Первый"}, {"name": None, "rus_name": "Второй"}]
+
+        assert parse_author(raw) == "Первый, Второй"
+
+    def test_rus_name_fallback(self) -> None:
+        assert parse_author([{"name": None, "rus_name": "Русское имя"}]) == "Русское имя"
+
+    def test_empty_and_missing(self) -> None:
+        assert parse_author(None) is None
+        assert parse_author([]) is None
+        assert parse_author([{"name": None, "rus_name": None}]) is None
+
+
+class TestSummaryText:
+    def test_prosemirror_document_becomes_text(self) -> None:
+        raw = {
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Первая часть"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "Вторая часть"}]},
+            ],
+        }
+
+        assert summary_text(raw) == "Первая часть Вторая часть"
+
+    def test_plain_string_passes_through(self) -> None:
+        assert summary_text("Описание") == "Описание"
+
+    def test_whitespace_variants_collapse(self) -> None:
+        raw = {
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "a   b"}]},
+                {"type": "text", "text": " c "},
+            ],
+        }
+
+        assert summary_text(raw) == "a b c"
+
+    def test_empty_document_is_none(self) -> None:
+        assert summary_text(None) is None
+        assert summary_text({"type": "doc", "content": []}) is None
+        assert summary_text({"type": "paragraph", "content": []}) is None
+
+
+class TestParseCovers:
+    def test_all_covers_sorted_by_order(self) -> None:
+        covers = parse_covers(load("covers.json"))
+
+        assert isinstance(covers, tuple)
+        assert [cover.order for cover in covers] == [0, 1, 2, 3]
+        assert all(isinstance(cover, Cover) for cover in covers)
+
+    def test_label_and_url_priority(self) -> None:
+        covers = parse_covers(load("covers.json"))
+
+        assert covers[0].label == "Re:Zero — Том 1"
+        assert covers[0].url.endswith("_orig.jpg"), "приоритет отдаётся orig"
+        assert covers[1].label == "Том 2", "info отсутствует — метка из порядка"
+        assert covers[1].url.endswith("cover_1.jpg"), "orig нет — берётся default"
+        assert covers[2].url.endswith("_thumb.jpg"), "остаётся только thumbnail"
+        assert covers[3].url is None, "обложка без вариантов не ломает сборку"
+
+    def test_empty_and_broken_responses(self) -> None:
+        assert parse_covers({"data": []}) == ()
+        assert parse_covers({"data": None}) == ()
+        assert parse_covers("не список") == ()
+        assert parse_covers({"data": [{"order": 0}]}) == (), "без id запись пропускается"
 
 
 class TestParseChapters:

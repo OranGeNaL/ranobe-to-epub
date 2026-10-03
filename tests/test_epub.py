@@ -35,7 +35,7 @@ from ranobelib_epub.epub.parts import (
     package_opf,
     toc_ncx,
 )
-from ranobelib_epub.models import Book, Chapter
+from ranobelib_epub.models import Book, Chapter, MetadataOverrides, apply_overrides
 from ranobelib_epub.source.numbering import assign_labels, sort_chapters
 from ranobelib_epub.source.parsing import parse_chapters
 
@@ -176,6 +176,65 @@ class TestPackageMetadata:
         root = ET.fromstring(package_opf(book, []))
 
         assert "Фэнтези" in root.find("opf:metadata/dc:subject", OPF_NS).text
+
+    def test_publisher_written_when_known(self) -> None:
+        book = Book(slug_url="u", book_id=1, publisher="Издательство «Ранобэ»")
+
+        root = ET.fromstring(package_opf(book, []))
+
+        assert root.find("opf:metadata/dc:publisher", OPF_NS).text == "Издательство «Ранобэ»"
+
+    def test_publisher_omitted_when_unknown(self) -> None:
+        root = ET.fromstring(package_opf(Book(slug_url="u", book_id=1), []))
+
+        assert root.find("opf:metadata/dc:publisher", OPF_NS) is None
+
+    def test_series_with_index_uses_epub3_meta(self) -> None:
+        book = Book(slug_url="u", book_id=1, series="Re:Zero", series_index=3)
+
+        root = ET.fromstring(package_opf(book, []))
+        metas = root.findall("opf:metadata/opf:meta", OPF_NS)
+
+        collection = [m for m in metas if m.get("property") == "belongs-to-collection"]
+        kind = [m for m in metas if m.get("refines") == "#series"]
+        group = [m for m in kind if m.get("property") == "group-position"]
+
+        assert collection[0].text == "Re:Zero"
+        assert kind[0].text == "series"
+        assert group[0].text == "3"
+
+    def test_series_without_index_has_no_group_position(self) -> None:
+        book = Book(slug_url="u", book_id=1, series="Re:Zero")
+
+        root = ET.fromstring(package_opf(book, []))
+        metas = root.findall("opf:metadata/opf:meta", OPF_NS)
+
+        group = [m for m in metas if m.get("property") == "group-position"]
+        assert [m.text for m in group] == []
+
+    def test_series_omitted_when_unknown(self) -> None:
+        root = ET.fromstring(package_opf(Book(slug_url="u", book_id=1), []))
+
+        metas = root.findall("opf:metadata/opf:meta", OPF_NS)
+        assert all(m.get("property") != "belongs-to-collection" for m in metas)
+
+    def test_identifier_stable_under_overrides(self) -> None:
+        overridden = apply_overrides(
+            BOOK,
+            MetadataOverrides(
+                title="Другое название",
+                author="Другой автор",
+                series="Серия",
+                series_index=1,
+            ),
+        )
+
+        first = ET.fromstring(package_opf(BOOK, []))
+        second = ET.fromstring(package_opf(overridden, []))
+
+        assert first.find("opf:metadata/dc:identifier", OPF_NS).text == (
+            second.find("opf:metadata/dc:identifier", OPF_NS).text
+        )
 
     def test_manifest_and_spine_cover_all_chapters(self) -> None:
         entries = [ChapterEntry(f"{i} Глава", f"TEXT/{i}.html", i) for i in range(1, 4)]

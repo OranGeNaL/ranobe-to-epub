@@ -98,6 +98,24 @@ def package_opf(
     if book.genres:
         joined = ", ".join(book.genres)
         lines.append(f"    <dc:subject>{escape(joined)}</dc:subject>")
+    if book.publisher:
+        lines.append(f"    <dc:publisher>{escape(book.publisher)}</dc:publisher>")
+
+    if book.series:
+        lines.append(
+            '    <meta property="belongs-to-collection" id="series">'
+            + escape(book.series)
+            + "</meta>"
+        )
+        lines.append(
+            '    <meta refines="#series" property="collection-type">series</meta>'
+        )
+        if book.series_index is not None:
+            lines.append(
+                '    <meta refines="#series" property="group-position">'
+                + str(int(book.series_index))
+                + "</meta>"
+            )
 
     lines.append(f"    <dc:date>{stamp}</dc:date>")
     lines.append('    <meta property="dcterms:modified">' + f"{stamp}T00:00:00Z</meta>")

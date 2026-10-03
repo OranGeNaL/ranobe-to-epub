@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 
 from ..charset.profiles import DEFAULT_PROFILE, PROFILES
 from ..epub.naming import sanitize as sanitize_name
 from ..images.pipeline import DEFAULT_MAX_MB, DEFAULT_MAX_WIDTH, DEFAULT_QUALITY
 from ..images.presets import DEFAULT_PRESET, PresetError, preset_names, resolve_settings
-from ..models import Book, Chapter
+from ..models import LANGUAGE_CODES, Book, Chapter, MetadataOverrides
 from ..source.client import DEFAULT_RATE_LIMIT
 from ..source.translations import DEFAULT_TRANSLATION
 
@@ -79,6 +80,26 @@ def charset_profile(value: str) -> str:
     return value
 
 
+def iso_date(value: str) -> str:
+    """Дата строго в формате `YYYY-MM-DD` (задача 2.2)."""
+    normalized = value.strip()
+    try:
+        datetime.strptime(normalized, "%Y-%m-%d")
+    except ValueError as error:
+        raise ArgumentError(
+            f"дата должна быть в формате YYYY-MM-DD, получено «{value}»"
+        ) from error
+    return normalized
+
+
+def language_code(value: str) -> str:
+    """Код языка из фиксированного набора 10 языков (решение 6 design.md)."""
+    if value not in LANGUAGE_CODES:
+        options = ", ".join(LANGUAGE_CODES)
+        raise ArgumentError(f"неизвестный код языка «{value}». Доступны: {options}")
+    return value
+
+
 def _validate(namespace: argparse.Namespace) -> None:
     """Проверки значений с человеческими сообщениями.
 
@@ -91,6 +112,14 @@ def _validate(namespace: argparse.Namespace) -> None:
         positive_int(str(namespace.max_image_width))
     if namespace.quality is not None:
         jpeg_quality(str(namespace.quality))
+    if namespace.language is not None:
+        language_code(namespace.language)
+    if namespace.date is not None:
+        iso_date(namespace.date)
+    if namespace.series_index is not None:
+        positive_int(str(namespace.series_index))
+    if namespace.cover is not None:
+        positive_int(str(namespace.cover))
     positive_float(str(namespace.rate_limit))
     positive_int(str(namespace.retries))
     charset_profile(namespace.charset)
@@ -148,6 +177,37 @@ class Options:
     rate_limit: float = DEFAULT_RATE_LIMIT
     retries: int = DEFAULT_RETRIES
     no_tui: bool = False
+    title: str | None = None
+    author: str | None = None
+    description: str | None = None
+    language: str | None = None
+    subjects: str | None = None
+    date: str | None = None
+    publisher: str | None = None
+    series: str | None = None
+    series_index: int | None = None
+    cover_id: int | None = None
+    cover_disabled: bool = False
+    list_covers: bool = False
+
+    @property
+    def metadata_overrides(self) -> MetadataOverrides:
+        """Переопределения метаданных из флагов; пустые поля означают «с сайта»."""
+        genres: tuple[str, ...] | None = None
+        if self.subjects is not None:
+            parsed = tuple(part.strip() for part in self.subjects.split(",") if part.strip())
+            genres = parsed or None
+        return MetadataOverrides(
+            title=self.title,
+            author=self.author,
+            description=self.description,
+            language=self.language,
+            genres=genres,
+            date=self.date,
+            publisher=self.publisher,
+            series=self.series,
+            series_index=self.series_index,
+        )
 
     @property
     def selection(self):
@@ -291,6 +351,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--retries", default=DEFAULT_RETRIES, help="число попыток")
     parser.add_argument("--no-tui", action="store_true", help="без интерактивного интерфейса")
+    parser.add_argument("--title", help="название книги (dc:title)")
+    parser.add_argument("--author", help="автор (dc:creator)")
+    parser.add_argument("--description", help="описание (dc:description)")
+    parser.add_argument(
+        "--language",
+        help=f"код языка: {', '.join(LANGUAGE_CODES)} (по умолчанию язык сайта)",
+    )
+    parser.add_argument("--subjects", help="жанры через запятую (dc:subject)")
+    parser.add_argument("--date", help="дата в формате YYYY-MM-DD (dc:date)")
+    parser.add_argument("--publisher", help="издатель (dc:publisher)")
+    parser.add_argument("--series", help="название серии")
+    parser.add_argument("--series-index", help="номер тома в серии")
+    parser.add_argument("--cover", help="идентификатор обложки из `--list-covers`")
+    parser.add_argument("--no-cover", action="store_true", help="собрать EPUB без обложки")
+    parser.add_argument(
+        "--list-covers", action="store_true", help="показать доступные обложки и завершиться"
+    )
     return parser
 
 
@@ -342,6 +419,20 @@ def parse_args(argv: list[str] | None = None) -> Options:
         rate_limit=rate_limit,
         retries=retries,
         no_tui=namespace.no_tui,
+        title=namespace.title,
+        author=namespace.author,
+        description=namespace.description,
+        language=namespace.language,
+        subjects=namespace.subjects,
+        date=namespace.date,
+        publisher=namespace.publisher,
+        series=namespace.series,
+        series_index=(
+            positive_int(namespace.series_index) if namespace.series_index is not None else None
+        ),
+        cover_id=positive_int(namespace.cover) if namespace.cover is not None else None,
+        cover_disabled=namespace.no_cover,
+        list_covers=namespace.list_covers,
     )
 
 

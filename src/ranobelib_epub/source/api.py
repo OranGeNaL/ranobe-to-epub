@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from ..models import Book, Chapter, ChapterContent
+from ..models import Book, Chapter, ChapterContent, Cover
 from .client import (
     ApiError,
     ApiUnavailableError,
@@ -16,11 +16,16 @@ from .client import (
     RanobeLibClient,
     WafBlockedError,
 )
-from .parsing import parse_book, parse_chapter_content, parse_chapters
+from .parsing import parse_book, parse_chapter_content, parse_chapters, parse_covers
 
 BOOK_PATH = "/manga/{slug_url}"
 CHAPTERS_PATH = "/manga/{slug_url}/chapters"
 CHAPTER_PATH = "/manga/{slug_url}/chapter"
+COVERS_PATH = "/manga/{slug_url}/covers"
+
+#: Карточка без расширения полей не отдаёт автора, жанров и описания (решение 5
+#: design.md): они приходят только с `fields[]=authors&fields[]=genres&fields[]=summary`.
+BOOK_FIELDS: dict[str, list[str]] = {"fields[]": ["authors", "genres", "summary"]}
 
 #: Развёрнутая причина главы без выбранной ветки перевода.
 NO_BRANCH_REASON = (
@@ -87,13 +92,28 @@ class RanobeLibSource:
         self.client = client
 
     async def fetch_book(self, slug_url: str) -> Book:
-        payload = await self.client.get_json(BOOK_PATH.format(slug_url=slug_url))
+        payload = await self.client.get_json(
+            BOOK_PATH.format(slug_url=slug_url),
+            dict(BOOK_FIELDS),
+        )
         return parse_book(payload)
 
     async def fetch_chapters(self, slug_url: str) -> list[Chapter]:
         """Весь список глав одним запросом: пагинации на этом эндпоинте нет."""
         payload = await self.client.get_json(CHAPTERS_PATH.format(slug_url=slug_url))
         return parse_chapters(payload)
+
+    async def fetch_covers(self, slug_url: str) -> tuple[Cover, ...]:
+        """Список обложек карусели; недоступность не прерывает сборку.
+
+        Пустой список возвращается и при ошибке эндпоинта, и при отсутствии обложек —
+        интерфейс показывает только «обложку по умолчанию» и «без обложки» (решение 2).
+        """
+        try:
+            payload = await self.client.get_json(COVERS_PATH.format(slug_url=slug_url))
+        except ApiError:
+            return ()
+        return parse_covers(payload)
 
     async def fetch_chapter_content(
         self,

@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import ClassVar, cast
 
@@ -37,9 +38,20 @@ from ..cli.options import (
     Options,
     apply_chapter_selection,
     build_options,
+    iso_date,
+    positive_int,
 )
 from ..images.presets import PRESETS, preset_names
-from ..models import Book, Chapter
+from ..models import (
+    LANGUAGE_CODES,
+    LANGUAGE_LABELS,
+    Book,
+    Chapter,
+    Cover,
+    MetadataOverrides,
+    apply_overrides,
+    resolve_cover_url,
+)
 from ..pipeline.downloader import coverage_note
 from ..pipeline.report import ChapterEvent, Progress, ReportRecorder
 from ..source.translations import available_teams, compute_coverage
@@ -50,6 +62,11 @@ DEFAULT_LABEL = "Актуальная ветка (по умолчанию)"
 
 MANUAL_PRESET = "__manual__"
 MANUAL_PRESET_LABEL = "Вручную"
+
+COVER_DEFAULT = "__cover_default__"
+COVER_DEFAULT_LABEL = "Обложка книги (по умолчанию)"
+COVER_NONE = "__cover_none__"
+COVER_NONE_LABEL = "Без обложки"
 
 
 def _preset_choices() -> list[tuple[str, str]]:
@@ -66,6 +83,7 @@ class Metadata:
     book: Book
     chapters: list[Chapter]
     slug: str = ""
+    covers: tuple[Cover, ...] = ()
 
 
 @dataclass(slots=True)
@@ -77,6 +95,10 @@ class BuildPlan:
     options: Options
     slug: str
     team: str | None = None
+    overrides: MetadataOverrides = field(default_factory=MetadataOverrides)
+    cover_id: int | None = None
+    cover_disabled: bool = False
+    covers: tuple[Cover, ...] = ()
 
 
 ProgressSink = Callable[[Progress], None]
@@ -124,6 +146,10 @@ class ExporterApp(App[None]):
         self.options = options or Options()
         self.metadata: Metadata | None = None
         self.team: str | None = None
+        self.overrides: MetadataOverrides = MetadataOverrides()
+        self.cover_id: int | None = None
+        self.cover_disabled: bool = False
+        self.metadata_draft: dict[str, str] = {}
         self.report_text: str = ""
         self.interrupted: bool = False
         self.progress_queue: asyncio.Queue[Progress] = asyncio.Queue()
@@ -149,6 +175,10 @@ class ExporterApp(App[None]):
             options=self.options,
             slug=self.metadata.slug,
             team=self.team,
+            overrides=self.overrides,
+            cover_id=self.cover_id,
+            cover_disabled=self.cover_disabled,
+            covers=self.metadata.covers,
         )
         return await self._build(plan, on_progress, on_notice)
 
@@ -201,7 +231,7 @@ class LinkScreen(Screen[None]):
         if self._has_choice(metadata.chapters):
             self.app.push_screen(TranslationScreen())
         else:
-            self.app.push_screen(ConfirmScreen())
+            self.app.push_screen(MetadataScreen())
 
     @staticmethod
     def _has_choice(chapters: list[Chapter]) -> bool:
@@ -258,7 +288,7 @@ class TranslationScreen(Screen[None]):
         app = cast(ExporterApp, self.app)
         if event.button.id == "continue":
             app.team = self._selected_team()
-            app.push_screen(ConfirmScreen())
+            app.push_screen(MetadataScreen())
         elif event.button.id == "back":
             app.pop_screen()
         elif event.button.id == "details":
@@ -278,6 +308,204 @@ class TranslationScreen(Screen[None]):
             return
         labels = ", ".join(coverage.uncovered_labels)
         target.update(f"Непокрытые главы ({len(coverage.uncovered_labels)}): {labels}")
+
+
+class MetadataScreen(Screen[None]):
+    """Шаг 3: редактирование метаданных EPUB и выбор обложки (решение 3 design.md).
+
+    Поля предзаполнены значениями с сайта; пустое поле означает «использовать значение
+    с сайта». Введённое хранится в `ExporterApp.metadata_draft`, поэтому возврат назад
+    не теряет ввод (задача 6.2); валидированные результаты уходят в `overrides` и
+    `cover_id`/`cover_disabled`.
+    """
+
+    _FIELDS = ("title", "author", "description", "genres", "date", "publisher", "series",
+               "series_index")
+    _SELECTS = ("language", "cover")
+
+    def compose(self) -> ComposeResult:
+        app = cast(ExporterApp, self.app)
+        book = app.metadata.book if app.metadata else None
+        with Vertical():
+            yield Static("Метаданные и обложка", id="prompt")
+            with VerticalScroll():
+                yield Static("Название", classes="field_label")
+                yield Input(
+                    value=self._value(app, "title", book.title if book else ""),
+                    id="title",
+                    compact=True,
+                )
+                yield Static("Автор", classes="field_label")
+                yield Input(
+                    value=self._value(app, "author", (book.author if book else "") or ""),
+                    id="author",
+                    compact=True,
+                )
+                yield Static("Описание", classes="field_label")
+                yield Input(
+                    value=self._value(app, "description", (book.summary if book else "") or ""),
+                    id="description",
+                    compact=True,
+                )
+                yield Static("Жанры (через запятую)", classes="field_label")
+                yield Input(
+                    value=self._value(app, "genres", ", ".join(book.genres) if book else ""),
+                    id="genres",
+                    compact=True,
+                )
+                yield Static("Язык", classes="field_label")
+                yield Select(
+                    _language_choices(),
+                    value=self._language_value(app, book),
+                    allow_blank=False,
+                    compact=True,
+                    id="language",
+                )
+                yield Static("Дата (YYYY-MM-DD)", classes="field_label")
+                yield Input(
+                    value=self._value(app, "date", ""),
+                    id="date",
+                    compact=True,
+                )
+                yield Static("Издатель", classes="field_label")
+                yield Input(
+                    value=self._value(app, "publisher", ""),
+                    id="publisher",
+                    compact=True,
+                )
+                yield Static("Серия", classes="field_label")
+                yield Input(
+                    value=self._value(app, "series", ""),
+                    id="series",
+                    compact=True,
+                )
+                yield Static("Номер тома", classes="field_label")
+                yield Input(
+                    value=self._value(app, "series_index", ""),
+                    id="series_index",
+                    compact=True,
+                )
+                yield Static("Обложка", classes="field_label")
+                yield Select(
+                    self._cover_choices(app),
+                    value=self._cover_value(app),
+                    allow_blank=False,
+                    compact=True,
+                    id="cover",
+                )
+            yield Static("", id="form_error")
+            with Horizontal(classes="actions"):
+                yield Button("Дальше", id="next", variant="primary")
+                yield Button("Назад", id="back")
+        yield Footer()
+
+    @staticmethod
+    def _value(app: ExporterApp, name: str, fallback: str) -> str:
+        """Значение поля: черновик, затем флаг CLI, затем значение с сайта."""
+        draft = app.metadata_draft.get(name)
+        if draft is not None:
+            return draft
+        options_field = {"genres": "subjects"}.get(name, name)
+        flag = getattr(app.options, options_field, None)
+        if flag is not None:
+            return str(flag)
+        return fallback or ""
+
+    @staticmethod
+    def _language_value(app: ExporterApp, book: Book | None) -> str:
+        draft = app.metadata_draft.get("language")
+        if draft is not None:
+            return draft
+        if app.options.language:
+            return app.options.language
+        site = book.in_language if book else None
+        return site if site in LANGUAGE_CODES else "ru"
+
+    def _cover_choices(self, app: ExporterApp) -> list[tuple[str, str]]:
+        choices = [(COVER_DEFAULT_LABEL, COVER_DEFAULT), (COVER_NONE_LABEL, COVER_NONE)]
+        covers = app.metadata.covers if app.metadata else ()
+        choices.extend((f"{cover.label} (id={cover.id})", str(cover.id)) for cover in covers)
+        return choices
+
+    def _cover_value(self, app: ExporterApp) -> str:
+        draft = app.metadata_draft.get("cover")
+        if draft is not None:
+            if draft in (COVER_DEFAULT, COVER_NONE):
+                return draft
+            covers = app.metadata.covers if app.metadata else ()
+            if any(cover.id == int(draft) for cover in covers):
+                return draft
+        if app.cover_disabled:
+            return COVER_NONE
+        if app.cover_id is not None:
+            covers = app.metadata.covers if app.metadata else ()
+            if any(cover.id == app.cover_id for cover in covers):
+                return str(app.cover_id)
+        return COVER_DEFAULT
+
+    def _collect_all(self) -> None:
+        """Синхронизирует черновик с текущими значениями виджетов (перед переходом)."""
+        app = cast(ExporterApp, self.app)
+        for name in self._FIELDS:
+            app.metadata_draft[name] = self.query_one(f"#{name}", Input).value
+        for select_id in self._SELECTS:
+            app.metadata_draft[select_id] = str(self.query_one(f"#{select_id}", Select).value)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "back":
+            self._collect_all()
+            self.app.pop_screen()
+            return
+        if event.button.id != "next":
+            return
+        self._submit()
+
+    def _submit(self) -> None:
+        app = cast(ExporterApp, self.app)
+        self._collect_all()
+        query = self.query_one
+
+        date_raw = query("#date", Input).value.strip()
+        series_index_raw = query("#series_index", Input).value.strip()
+        try:
+            date_value = iso_date(date_raw) if date_raw else None
+            series_index = positive_int(series_index_raw) if series_index_raw else None
+        except ArgumentError as error:
+            query("#form_error", Static).update(f"Ошибка: {error}")
+            return
+        query("#form_error", Static).update("")
+
+        genres_raw = query("#genres", Input).value.strip()
+        genres = tuple(part.strip() for part in genres_raw.split(",") if part.strip()) or None
+        app.overrides = MetadataOverrides(
+            title=query("#title", Input).value.strip() or None,
+            author=query("#author", Input).value.strip() or None,
+            description=query("#description", Input).value.strip() or None,
+            language=str(query("#language", Select).value),
+            genres=genres,
+            date=date_value,
+            publisher=query("#publisher", Input).value.strip() or None,
+            series=query("#series", Input).value.strip() or None,
+            series_index=series_index,
+        )
+
+        selection = str(query("#cover", Select).value)
+        if selection == COVER_NONE:
+            app.cover_disabled = True
+            app.cover_id = None
+        elif selection == COVER_DEFAULT:
+            app.cover_disabled = False
+            app.cover_id = None
+        else:
+            app.cover_disabled = False
+            app.cover_id = int(selection)
+
+        app.push_screen(ConfirmScreen())
+
+
+def _language_choices() -> list[tuple[str, str]]:
+    """Варианты селектора языка: метка + код из набора 10 языков."""
+    return [(f"{LANGUAGE_LABELS.get(code, code)} ({code})", code) for code in LANGUAGE_CODES]
 
 
 class ConfirmScreen(Screen[None]):
@@ -544,12 +772,13 @@ async def default_load_metadata(link: str, options: Options) -> Metadata:
         source = RanobeLibSource(client)
         book = await source.fetch_book(slug)
         chapters = await source.fetch_chapters(slug)
+        covers = await source.fetch_covers(slug)
     finally:
         await client.aclose()
 
     assign_labels(chapters)
     chapters = sort_chapters(chapters)
-    return Metadata(book=book, chapters=chapters, slug=slug)
+    return Metadata(book=book, chapters=chapters, slug=slug, covers=covers)
 
 
 async def default_build(
@@ -575,6 +804,15 @@ async def default_build(
     if requires_confirmation(plan.book):
         on_notice(confirm_age(plan.book, recorder.report))
 
+    effective_book = apply_overrides(plan.book, plan.overrides)
+    cover_url = resolve_cover_url(plan.book, plan.covers, plan.cover_id, plan.cover_disabled)
+    if plan.cover_id is not None:
+        chosen = next((item for item in plan.covers if item.id == plan.cover_id), None)
+        if chosen is None or not chosen.url:
+            recorder.report.notes.append(
+                f"выбранная обложка {plan.cover_id} недоступна; EPUB собран без обложки"
+            )
+
     client = RanobeLibClient(build_config(options))
     try:
         source = RanobeLibSource(client)
@@ -592,10 +830,21 @@ async def default_build(
             for chapter in chapters
         ]
         fetched = await downloader.fetch_all(tasks, book_slug=plan.slug)
-        target = options.output_path_for(plan.book)
+        target = options.output_path_for(effective_book)
         target.parent.mkdir(parents=True, exist_ok=True)
-        cover: ImageAsset | None = await downloader.fetch_cover(plan.book)
-        write_epub(target, plan.book, fetched, options, recorder, cover=cover)
+        build_date = None
+        if plan.overrides.date:
+            build_date = date.fromisoformat(plan.overrides.date)
+        cover: ImageAsset | None = await downloader.fetch_cover(cover_url)
+        write_epub(
+            target,
+            effective_book,
+            fetched,
+            options,
+            recorder,
+            cover=cover,
+            build_date=build_date,
+        )
     finally:
         await client.aclose()
 

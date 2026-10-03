@@ -19,11 +19,14 @@ from __future__ import annotations
 from typing import Any
 
 from ..convert.html import html_to_document
-from ..models import Attachment, Book, Chapter, ChapterContent, TranslationBranch
+from ..models import Attachment, Book, Chapter, ChapterContent, Cover, TranslationBranch
 from .numbering import apply_numbering
 
 #: Язык, который проставляется в `dc:language`, когда сайт не отдал `inLanguage`.
 DEFAULT_LANGUAGE = "ru"
+
+#: Приоритет вариантов размера для обложек карусели (решение 2 design.md).
+_COVER_SIZE_ORDER = ("orig", "default", "md", "thumbnail")
 
 
 def _data(payload: Any) -> Any:
@@ -100,6 +103,95 @@ def parse_genres(raw: Any) -> tuple[str, ...]:
     return tuple(names)
 
 
+def parse_author(raw: Any) -> str | None:
+    """Автор из `authors[]`: несколько имён объединяются через `, `.
+
+    Поле `author` на карточке пустое, а реальные имена приходят только с расширением
+    `fields[]=authors` как список объектов `{name, rus_name, ...}`.
+    """
+    if not isinstance(raw, list):
+        return None
+    names: list[str] = []
+    for item in raw:
+        author = _as_dict(item)
+        name = _as_text(author.get("name")) or _as_text(author.get("rus_name"))
+        if name:
+            names.append(name)
+    return ", ".join(names) if names else None
+
+
+def summary_text(raw: Any) -> str | None:
+    """Описание из ProseMirror-документа `summary` в виде обычного текста.
+
+    Узлы-контейнеры (абзацы, заголовки) разделяются пробелом, вся разметка и
+    повторные пробелы убираются — результат идёт в `dc:description`.
+    """
+    if isinstance(raw, str):
+        text = raw
+    else:
+        doc = _as_dict(raw)
+        if not doc:
+            return None
+        text = "".join(_summary_text_parts(doc))
+    text = " ".join(text.split())
+    return text or None
+
+
+def _summary_text_parts(node: Any) -> list[str]:
+    """Рекурсивный обход ProseMirror-узлов: текстовые узлы и разделители блоков."""
+    if not isinstance(node, dict):
+        return []
+    if node.get("type") == "text":
+        text = str(node.get("text") or "")
+        return [text] if text else []
+    parts: list[str] = []
+    for child in node.get("content") or []:
+        parts.extend(_summary_text_parts(child))
+    if parts and node.get("type") in {"paragraph", "heading", "blockquote", "listItem"}:
+        parts.append(" ")
+    return parts
+
+
+def parse_covers(payload: Any) -> tuple[Cover, ...]:
+    """Список обложек карусели, упорядоченный по `order`.
+
+    Метка — `info`, при пустом значении — `Том {order + 1}`. Сломанные записи и ответы
+    без списка пропускаются: сборка не останавливается (требование «Карусель пуста или
+    недоступна»).
+    """
+    raw = _data(payload)
+    if not isinstance(raw, list):
+        return ()
+    covers: list[Cover] = []
+    for item in raw:
+        data = _as_dict(item)
+        cover_id = _as_int(data.get("id"))
+        if cover_id is None:
+            continue
+        order = _as_int(data.get("order")) or 0
+        info = _as_text(data.get("info"))
+        covers.append(
+            Cover(
+                id=cover_id,
+                order=order,
+                label=info or f"Том {order + 1}",
+                url=_cover_variant_url(data.get("cover")),
+            )
+        )
+    covers.sort(key=lambda cover: (cover.order, cover.id))
+    return tuple(covers)
+
+
+def _cover_variant_url(raw: Any) -> str | None:
+    """URL обложки по приоритету `orig → default → md → thumbnail`."""
+    cover = _as_dict(raw)
+    for key in _COVER_SIZE_ORDER:
+        url = _as_text(cover.get(key))
+        if url:
+            return url
+    return None
+
+
 def parse_book(payload: Any) -> Book:
     """Собирает `Book` из ответа `GET /manga/{slug_url}`."""
     data = _as_dict(_data(payload))
@@ -110,13 +202,13 @@ def parse_book(payload: Any) -> Book:
         book_id=_as_int(data.get("id")),
         name=_as_text(data.get("name")),
         rus_name=_as_text(data.get("rus_name")),
-        author=_as_text(data.get("author")),
+        author=parse_author(data.get("authors")) or _as_text(data.get("author")),
         cover=parse_cover(data.get("cover")),
         status=parse_status(data.get("status")),
         release_date=_as_text(data.get("releaseDateString")),
         year=_parse_year(_as_text(data.get("releaseDateString"))),
         genres=parse_genres(data.get("genres")),
-        summary=_as_text(data.get("summary")),
+        summary=summary_text(data.get("summary")),
         in_language=_as_text(data.get("inLanguage")),
         age_restriction_id=_as_int(restriction.get("id")),
         age_restriction_label=_as_text(restriction.get("label")),

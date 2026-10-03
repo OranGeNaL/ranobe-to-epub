@@ -17,6 +17,7 @@ from ranobelib_epub.cli.main import (
     EXIT_FAILED,
     EXIT_OK,
     Printer,
+    list_covers_flow,
     main,
     progress_line,
     run_build,
@@ -35,7 +36,7 @@ from ranobelib_epub.cli.options import (
     positive_float,
     positive_int,
 )
-from ranobelib_epub.models import Book, Chapter
+from ranobelib_epub.models import Book, Chapter, MetadataOverrides, apply_overrides
 from ranobelib_epub.pipeline.report import ChapterEvent, Progress
 
 URL = "https://ranobelib.me/book/94231--rezero"
@@ -58,6 +59,8 @@ class FixtureClient:
             return load("chapters.json")
         if path.endswith("/chapter"):
             return load("chapter.json")
+        if path.endswith("/covers"):
+            return load("covers.json")
         return load("book.json")
 
     async def aclose(self) -> None:
@@ -676,3 +679,275 @@ def _png_bytes() -> bytes:
     buffer = io.BytesIO()
     PILImage.new("RGB", (60, 40), (200, 10, 10)).save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+class TestMetadataFlags:
+    def test_metadata_flags_are_parsed(self) -> None:
+        options = parse_args(
+            [
+                URL,
+                "--title",
+                "Заглавие",
+                "--author",
+                "Автор",
+                "--description",
+                "Описание",
+                "--language",
+                "en",
+                "--subjects",
+                "Драма, Фэнтези",
+                "--date",
+                "2024-05-01",
+                "--publisher",
+                "Издатель",
+                "--series",
+                "Серия",
+                "--series-index",
+                "3",
+            ]
+        )
+
+        assert options.title == "Заглавие"
+        assert options.author == "Автор"
+        assert options.description == "Описание"
+        assert options.language == "en"
+        assert options.subjects == "Драма, Фэнтези"
+        assert options.date == "2024-05-01"
+        assert options.publisher == "Издатель"
+        assert options.series == "Серия"
+        assert options.series_index == 3
+
+    def test_cover_flags_are_parsed(self) -> None:
+        options = parse_args([URL, "--cover", "18021734", "--no-cover", "--list-covers"])
+
+        assert options.cover_id == 18021734
+        assert options.cover_disabled is True
+        assert options.list_covers is True
+
+    def test_defaults_keep_metadata_unchanged(self) -> None:
+        options = parse_args([URL])
+
+        assert options.title is None
+        assert options.language is None
+        assert options.cover_id is None
+        assert options.cover_disabled is False
+        assert options.list_covers is False
+
+    @pytest.mark.parametrize(
+        "argv_fragment",
+        [
+            ["--language", "xx"],
+            ["--date", "2020-13-40"],
+            ["--date", "не дата"],
+            ["--series-index", "abc"],
+            ["--series-index", "-1"],
+            ["--cover", "не число"],
+        ],
+    )
+    def test_invalid_metadata_values_are_rejected(self, argv_fragment: list[str]) -> None:
+        with pytest.raises(ArgumentError):
+            parse_args([URL, *argv_fragment])
+
+
+class TestMetadataOverridesProperty:
+    def test_builds_overrides_from_flags(self) -> None:
+        options = parse_args(
+            [URL, "--title", "T", "--language", "ja", "--subjects", " a , b "]
+        )
+
+        overrides = options.metadata_overrides
+
+        assert overrides.title == "T"
+        assert overrides.language == "ja"
+        assert overrides.genres == ("a", "b")
+
+    def test_empty_subjects_stay_none(self) -> None:
+        options = parse_args([URL])
+
+        assert options.metadata_overrides.genres is None
+
+    def test_empty_subjects_string_means_no_override(self) -> None:
+        options = Options(subjects=" , , ")
+
+        assert options.metadata_overrides.genres is None
+
+
+class TestListCovers:
+    def test_prints_covers_with_ids_without_building(self) -> None:
+        stream = io.StringIO()
+        options = parse_args([URL])
+
+        asyncio.run(list_covers_flow(options, Printer(stream=stream), client=FixtureClient()))
+
+        text = stream.getvalue()
+        assert "Re:Zero" in text
+        assert "18021734" in text
+        assert "Том 1" in text
+
+    def test_empty_covers_hint_uses_default(self) -> None:
+        class NoCoversClient(FixtureClient):
+            async def get_json(self, path, params=None):
+                if path.endswith("/covers"):
+                    return {"data": []}
+                return await super().get_json(path, params)
+
+        stream = io.StringIO()
+        options = parse_args([URL])
+
+        asyncio.run(
+            list_covers_flow(options, Printer(stream=stream), client=NoCoversClient())
+        )
+
+        assert "Доступных обложек нет" in stream.getvalue()
+
+    def test_missing_book_argument_is_rejected(self) -> None:
+        with pytest.raises(ArgumentError, match="ссылка"):
+            asyncio.run(list_covers_flow(Options(), Printer(stream=io.StringIO())))
+
+
+class TestRunBuildWithMetadata:
+    def test_overrides_and_cover_reach_build(self, monkeypatch, tmp_path: Path) -> None:
+        from datetime import date
+
+        captured: dict = {}
+
+        class StubDownloader:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def fetch_all(self, tasks, book_slug):
+                return []
+
+            async def fetch_cover(self, cover_url):
+                captured["cover_url"] = cover_url
+                return None
+
+        main_module = sys.modules["ranobelib_epub.cli.main"]
+        monkeypatch.setattr(main_module, "ChapterDownloader", StubDownloader)
+
+        def fake_write(target, book, fetched, options, recorder, cover=None, build_date=None):
+            captured["book"] = book
+            captured["build_date"] = build_date
+            return 0
+
+        monkeypatch.setattr(main_module, "write_epub", fake_write)
+
+        options = parse_args(
+            [
+                URL,
+                "--no-tui",
+                "--title",
+                "Новое заглавие",
+                "--author",
+                "Новый автор",
+                "--language",
+                "en",
+                "--subjects",
+                "Приключения, Драма",
+                "--series",
+                "Re:Zero",
+                "--series-index",
+                "2",
+                "--date",
+                "2024-01-01",
+                "--cover",
+                "18021735",
+                "--chapters",
+                "1",
+                "--output",
+                str(tmp_path / "b.epub"),
+            ]
+        )
+        asyncio.run(run_build(options, Printer(stream=io.StringIO()), client=FixtureClient()))
+
+        book = captured["book"]
+        assert book.title == "Новое заглавие"
+        assert book.author == "Новый автор"
+        assert book.in_language == "en"
+        assert book.genres == ("Приключения", "Драма")
+        assert book.series == "Re:Zero"
+        assert book.series_index == 2
+        assert captured["build_date"] == date(2024, 1, 1)
+        assert captured["cover_url"] == "https://cover.cdnlibs.org/.../cover_1.jpg"
+
+    def test_no_cover_flag_disables_cover(self, monkeypatch, tmp_path: Path) -> None:
+        captured: dict = {}
+
+        class StubDownloader:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def fetch_all(self, tasks, book_slug):
+                return []
+
+            async def fetch_cover(self, cover_url):
+                captured["cover_url"] = cover_url
+                return None
+
+        main_module = sys.modules["ranobelib_epub.cli.main"]
+        monkeypatch.setattr(main_module, "ChapterDownloader", StubDownloader)
+        monkeypatch.setattr(main_module, "write_epub", lambda *a, **k: 0)
+
+        options = parse_args(
+            [
+                URL,
+                "--no-tui",
+                "--no-cover",
+                "--chapters",
+                "1",
+                "--output",
+                str(tmp_path / "b.epub"),
+            ]
+        )
+        asyncio.run(run_build(options, Printer(stream=io.StringIO()), client=FixtureClient()))
+
+        assert captured["cover_url"] is None
+
+    def test_unknown_cover_id_is_reported_and_dropped(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        captured: dict = {}
+
+        class StubDownloader:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def fetch_all(self, tasks, book_slug):
+                return []
+
+            async def fetch_cover(self, cover_url):
+                captured["cover_url"] = cover_url
+                return None
+
+        main_module = sys.modules["ranobelib_epub.cli.main"]
+        monkeypatch.setattr(main_module, "ChapterDownloader", StubDownloader)
+
+        def fake_write(target, book, fetched, options, recorder, cover=None, build_date=None):
+            captured["notes"] = list(recorder.report.notes)
+            return 0
+
+        monkeypatch.setattr(main_module, "write_epub", fake_write)
+
+        options = parse_args(
+            [
+                URL,
+                "--no-tui",
+                "--cover",
+                "999999",
+                "--chapters",
+                "1",
+                "--output",
+                str(tmp_path / "b.epub"),
+            ]
+        )
+        asyncio.run(run_build(options, Printer(stream=io.StringIO()), client=FixtureClient()))
+
+        assert captured["cover_url"] is None
+        assert any("999999" in note and "без обложки" in note for note in captured["notes"])
+        assert captured["notes"], "причина недоступности фиксируется в отчёте"
+
+    def test_override_affects_default_filename(self) -> None:
+        book = Book(slug_url="94231--rezero", rus_name="Старое", name="Старое")
+        overridden = apply_overrides(book, MetadataOverrides(title="Новое заглавие"))
+
+        assert default_filename(overridden) == "Новое заглавие.epub"

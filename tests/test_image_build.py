@@ -281,7 +281,7 @@ class TestCover:
         downloader = ChapterDownloader(source, recorder, max_image_mb=1e-9)
         book = Book(slug_url="94231--x", cover="/uploads/covers/big.png")
 
-        cover = asyncio.run(downloader.fetch_cover(book))
+        cover = asyncio.run(downloader.fetch_cover(book.cover))
 
         assert cover is not None
         assert cover.filename == "Images/img_0001.jpg"
@@ -301,7 +301,7 @@ class TestCover:
         fetched = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
         book = Book(slug_url="94231--x", cover="/uploads/covers/a.png")
 
-        cover = asyncio.run(downloader.fetch_cover(book))
+        cover = asyncio.run(downloader.fetch_cover(book.cover))
 
         assert cover is not None
         assert cover.filename == fetched[0].assets[0].filename
@@ -314,7 +314,7 @@ class TestCover:
         downloader = ChapterDownloader(source, recorder)
         book = Book(slug_url="94231--x", cover="/uploads/covers/absent.png")
 
-        cover = asyncio.run(downloader.fetch_cover(book))
+        cover = asyncio.run(downloader.fetch_cover(book.cover))
 
         assert cover is None
         assert len(recorder.report.missing_images) == 1
@@ -324,7 +324,18 @@ class TestCover:
         source = FakeSource({}, client)
         downloader = ChapterDownloader(source, ReportRecorder())
 
-        assert asyncio.run(downloader.fetch_cover(Book(slug_url="94231--x"))) is None
+        assert asyncio.run(downloader.fetch_cover(None)) is None
+        assert client.requested == []
+
+    def test_cover_skipped_when_images_disabled(self) -> None:
+        url = "https://ranobelib.me/uploads/covers/big.png"
+        client = FakeClient({url: png_bytes()})
+        source = FakeSource({}, client)
+        downloader = ChapterDownloader(source, ReportRecorder(), include_images=False)
+
+        cover = asyncio.run(downloader.fetch_cover(url))
+
+        assert cover is None
         assert client.requested == []
 
 
@@ -344,7 +355,7 @@ class TestEpubWithImages:
         downloader = ChapterDownloader(source, recorder, max_image_mb=1e-9)
         fetched = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
         book = Book(slug_url="94231--x", rus_name="Книга", cover="/uploads/covers/c.png")
-        cover = asyncio.run(downloader.fetch_cover(book))
+        cover = asyncio.run(downloader.fetch_cover(book.cover))
 
         target = tmp_path / "book.epub"
         write_epub(target, book, fetched, Options(), recorder, cover=cover)

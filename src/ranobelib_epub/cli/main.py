@@ -12,10 +12,11 @@ import asyncio
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from ..images.pipeline import ImageAsset
-from ..models import Book, Chapter
+from ..models import Book, Chapter, Cover, apply_overrides, resolve_cover_url
 from ..pipeline.downloader import (
     ChapterDownloader,
     ChapterTask,
@@ -137,6 +138,19 @@ async def run_build(
                 f"Внимание: выбранный перевод покрывает {coverage.covered} из {coverage.total} глав"
             )
 
+        effective_book = apply_overrides(book, options.metadata_overrides)
+
+        covers: tuple[Cover, ...] = ()
+        if options.cover_id is not None:
+            covers = await source.fetch_covers(slug)
+        cover_url = resolve_cover_url(book, covers, options.cover_id, options.cover_disabled)
+        if options.cover_id is not None:
+            chosen = next((item for item in covers if item.id == options.cover_id), None)
+            if chosen is None or not chosen.url:
+                recorder.report.notes.append(
+                    f"выбранная обложка {options.cover_id} недоступна; EPUB собран без обложки"
+                )
+
         printer.line(
             f"Книга: {book.title} · глав: {len(chapters)} · "
             f"переводов: {len(available_teams(chapters))}"
@@ -158,11 +172,16 @@ async def run_build(
         ]
         fetched = await downloader.fetch_all(tasks, book_slug=slug)
 
-        target = options.output_path_for(book)
+        target = options.output_path_for(effective_book)
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        cover = await downloader.fetch_cover(book)
-        size = write_epub(target, book, fetched, options, recorder, cover=cover)
+        cover = await downloader.fetch_cover(cover_url)
+        build_date = None
+        if options.date:
+            build_date = date.fromisoformat(options.date)
+        size = write_epub(
+            target, effective_book, fetched, options, recorder, cover=cover, build_date=build_date
+        )
 
         printer.line()
         printer.line(recorder.render())
@@ -185,13 +204,14 @@ def write_epub(
     options: Options,
     recorder: ReportRecorder,
     cover: ImageAsset | None = None,
+    build_date: date | None = None,
 ) -> int:
     """Собирает EPUB из готовых глав и завершает отчёт."""
     from ..epub.builder import ChapterDocument, EpubBuilder
     from ..epub.naming import chapter_filename
     from ..epub.parts import chapter_document
 
-    builder = EpubBuilder(book)
+    builder = EpubBuilder(book, build_date=build_date)
     taken: set[str] = set()
 
     for index, item in enumerate(fetched, start=1):
@@ -226,6 +246,34 @@ def should_use_tui(options: Options) -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+async def list_covers_flow(
+    options: Options,
+    printer: Printer,
+    client: RanobeLibClient | None = None,
+) -> None:
+    """`--list-covers`: показывает обложки карусели и завершается без сборки (задача 5.2)."""
+    if not options.slug_url:
+        raise ArgumentError("не указана ссылка на книгу")
+
+    slug = parse_book_url(options.slug_url)
+    owns_client = client is None
+    active = client or RanobeLibClient(build_config(options))
+    try:
+        source = RanobeLibSource(active)
+        book = await source.fetch_book(slug)
+        covers = await source.fetch_covers(slug)
+    finally:
+        if owns_client:
+            await active.aclose()
+
+    printer.line(f"Книга: {book.title}")
+    if not covers:
+        printer.line("Доступных обложек нет; будет использована обложка книги.")
+        return
+    for index, cover in enumerate(covers, start=1):
+        printer.line(f"{index}. id={cover.id} — {cover.label}")
+
+
 def run_tui_mode(options: Options) -> int:
     """Запуск интерактивного интерфейса (задачи 14.1-14.10)."""
     from ..tui.app import ExporterApp
@@ -245,6 +293,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SystemExit as error:  # --help и ошибки argparse
         code = error.code
         return code if isinstance(code, int) else EXIT_BAD_ARGUMENT
+
+    if options.list_covers:
+        try:
+            asyncio.run(list_covers_flow(options, printer))
+        except BookNotFoundError as error:
+            printer.error(f"книга не найдена: {error}")
+            return EXIT_FAILED
+        except (ApiError, ArgumentError) as error:
+            printer.error(str(error))
+            return EXIT_FAILED
+        return EXIT_OK
 
     if should_use_tui(options):
         return run_tui_mode(options)

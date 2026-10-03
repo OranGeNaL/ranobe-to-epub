@@ -22,15 +22,20 @@ from textual.widgets import (
 )
 
 from ranobelib_epub.cli.options import Options
-from ranobelib_epub.models import Book, Chapter, TranslationBranch
+from ranobelib_epub.models import Book, Chapter, Cover, TranslationBranch
 from ranobelib_epub.pipeline.report import ChapterEvent, Progress, ReportRecorder
 from ranobelib_epub.tui.app import (
+    COVER_DEFAULT,
+    COVER_DEFAULT_LABEL,
+    COVER_NONE,
+    COVER_NONE_LABEL,
     DEFAULT_OPTION,
     MANUAL_PRESET,
     ConfirmScreen,
     ExporterApp,
     LinkScreen,
     Metadata,
+    MetadataScreen,
     ProgressScreen,
     ReportScreen,
     TranslationScreen,
@@ -39,6 +44,18 @@ from ranobelib_epub.tui.app import (
 
 LINK = "https://ranobelib.me/book/94231--rezero"
 BOOK = Book(slug_url="94231--rezero", rus_name="Re:Zero", name="Re:Zero")
+RICH_BOOK = Book(
+    slug_url="94231--rezero",
+    rus_name="Re:Zero",
+    name="Re:Zero",
+    author="Tappei Nagatsuki",
+    summary="Возвращение домой из магазина.",
+    genres=("Драма", "Фэнтези"),
+)
+COVERS = (
+    Cover(id=18021734, order=0, label="Том 1", url="https://cover/x1.jpg"),
+    Cover(id=18021735, order=1, label="Том 2", url="https://cover/x2.jpg"),
+)
 
 
 def make_chapter(index: int, teams: tuple[str, ...]) -> Chapter:
@@ -73,13 +90,13 @@ def single_team_chapters() -> list[Chapter]:
     return [make_chapter(index, ("Only",)) for index in range(1, 6)]
 
 
-def metadata(chapters: list[Chapter]) -> Metadata:
-    return Metadata(book=BOOK, chapters=chapters, slug="94231--rezero")
+def metadata(chapters: list[Chapter], covers: tuple[Cover, ...] = ()) -> Metadata:
+    return Metadata(book=BOOK, chapters=chapters, slug="94231--rezero", covers=covers)
 
 
-def loader(chapters: list[Chapter]):
+def loader(chapters: list[Chapter], covers: tuple[Cover, ...] = ()):
     async def load(link: str, options) -> Metadata:
-        return metadata(chapters)
+        return metadata(chapters, covers)
 
     return load
 
@@ -190,8 +207,14 @@ async def submit_link(pilot, app: ExporterApp, link: str = LINK) -> None:
     await pilot.pause()
 
 
-async def enter_confirm(pilot, app: ExporterApp) -> None:
+async def enter_metadata(pilot, app: ExporterApp) -> None:
     await submit_link(pilot, app)
+    await pilot.click("#next")
+    await pilot.pause()
+
+
+async def enter_confirm(pilot, app: ExporterApp) -> None:
+    await enter_metadata(pilot, app)
     await pilot.click("#start")
     await pilot.pause()
 
@@ -234,7 +257,7 @@ class TestLinkScreen:
         async with app.run_test() as pilot:
             await submit_link(pilot, app)
 
-            assert isinstance(app.screen, ConfirmScreen)
+            assert isinstance(app.screen, MetadataScreen)
 
 
 class TestTranslationScreen:
@@ -279,7 +302,7 @@ class TestTranslationScreen:
             await submit_link(pilot, app)
             await pilot.click("#continue")
             await pilot.pause()
-            assert isinstance(app.screen, ConfirmScreen)
+            assert isinstance(app.screen, MetadataScreen)
 
     async def test_details_list_uncovered_numbers(self) -> None:
         app = ExporterApp(load_metadata=loader(multi_team_chapters()))
@@ -307,6 +330,162 @@ class TestTranslationScreen:
             assert str(app.screen.query_one("#warning", Static).content) == ""
 
 
+def build_loader(book=RICH_BOOK, chapters=None, covers=()):
+    if chapters is None:
+        chapters = single_team_chapters()
+
+    async def load(link: str, options) -> Metadata:
+        return Metadata(book=book, chapters=chapters, slug="94231--rezero", covers=covers)
+
+    return load
+
+
+class TestMetadataScreen:
+    async def test_prefilled_from_site_values(self) -> None:
+        app = ExporterApp(load_metadata=build_loader())
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await submit_link(pilot, app)
+
+            assert isinstance(app.screen, MetadataScreen)
+            assert app.screen.query_one("#title", Input).value == "Re:Zero"
+            assert app.screen.query_one("#author", Input).value == "Tappei Nagatsuki"
+            assert app.screen.query_one("#description", Input).value == (
+                "Возвращение домой из магазина."
+            )
+            assert app.screen.query_one("#genres", Input).value == "Драма, Фэнтези"
+            assert app.screen.query_one("#language", Select).value == "ru"
+            assert app.screen.query_one("#cover", Select).value == COVER_DEFAULT
+
+    async def test_language_select_offers_ten_codes(self) -> None:
+        app = ExporterApp(load_metadata=build_loader())
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+
+            select = app.screen.query_one("#language", Select)
+            options = {str(value) for _, value in select._options}
+            assert options == {
+                "ru", "en", "ja", "zh", "ko", "de", "fr", "es", "it", "pt",
+            }
+
+    async def test_cover_select_includes_default_none_and_volumes(self) -> None:
+        app = ExporterApp(load_metadata=build_loader(covers=COVERS))
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+
+            select = app.screen.query_one("#cover", Select)
+            prompts = [str(prompt) for prompt, _ in select._options]
+            assert COVER_DEFAULT_LABEL in prompts
+            assert COVER_NONE_LABEL in prompts
+            assert any("Том 1" in prompt for prompt in prompts)
+            assert any("Том 2" in prompt for prompt in prompts)
+
+    async def test_invalid_date_stays_with_error(self) -> None:
+        app = ExporterApp(load_metadata=build_loader())
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            app.screen.query_one("#date", Input).value = "2020-13-40"
+            await pilot.click("#next")
+            await pilot.pause()
+
+            assert isinstance(app.screen, MetadataScreen)
+            assert "YYYY-MM-DD" in str(
+                app.screen.query_one("#form_error", Static).content
+            )
+
+    async def test_invalid_series_index_stays_with_error(self) -> None:
+        app = ExporterApp(load_metadata=build_loader())
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            app.screen.query_one("#series_index", Input).value = "abc"
+            await pilot.click("#next")
+            await pilot.pause()
+
+            assert isinstance(app.screen, MetadataScreen)
+            assert "Ошибка" in str(app.screen.query_one("#form_error", Static).content)
+
+    async def test_edits_flow_into_build_plan(self) -> None:
+        captured: dict = {}
+
+        async def build(plan, on_progress, on_notice):
+            captured["plan"] = plan
+            recorder = ReportRecorder(total_chapters=len(plan.chapters))
+            recorder.finished("/tmp/book.epub", 1)
+            return recorder
+
+        app = ExporterApp(
+            load_metadata=build_loader(covers=COVERS),
+            build=build,
+        )
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            assert isinstance(app.screen, MetadataScreen)
+            app.screen.query_one("#title", Input).value = "Моя книга"
+            app.screen.query_one("#genres", Input).value = "Приключения"
+            app.screen.query_one("#date", Input).value = "2024-05-01"
+            app.screen.query_one("#series", Input).value = "Re:Zero"
+            app.screen.query_one("#series_index", Input).value = "3"
+            app.screen.query_one("#cover", Select).value = "18021735"
+            await pilot.click("#next")
+            await pilot.pause()
+            await pilot.click("#start")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+        plan = captured["plan"]
+        assert plan.overrides.title == "Моя книга"
+        assert plan.overrides.genres == ("Приключения",)
+        assert plan.overrides.date == "2024-05-01"
+        assert plan.overrides.series == "Re:Zero"
+        assert plan.overrides.series_index == 3
+        assert plan.cover_id == 18021735
+        assert plan.cover_disabled is False
+
+    async def test_back_preserves_entered_values(self) -> None:
+        app = ExporterApp(load_metadata=build_loader())
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            assert isinstance(app.screen, MetadataScreen)
+            app.screen.query_one("#title", Input).value = "Черновик"
+            await pilot.click("#back")
+            await pilot.pause()
+            assert isinstance(app.screen, LinkScreen)
+
+            await submit_link(pilot, app)
+            assert isinstance(app.screen, MetadataScreen)
+            assert app.screen.query_one("#title", Input).value == "Черновик"
+
+    async def test_no_cover_and_cover_selection_reach_plan(self) -> None:
+        captured: dict = {}
+
+        async def build(plan, on_progress, on_notice):
+            captured["plan"] = plan
+            recorder = ReportRecorder(total_chapters=len(plan.chapters))
+            recorder.finished("/tmp/book.epub", 1)
+            return recorder
+
+        app = ExporterApp(load_metadata=build_loader(covers=COVERS), build=build)
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            app.screen.query_one("#cover", Select).value = COVER_NONE
+            await pilot.click("#next")
+            await pilot.pause()
+            await pilot.click("#start")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+        plan = captured["plan"]
+        assert plan.cover_disabled is True
+        assert plan.cover_id is None
+
+
 class TestConfirmScreen:
     """Задачи 3.1–3.4, 4.2: редактируемая форма параметров выгрузки."""
 
@@ -326,7 +505,7 @@ class TestConfirmScreen:
         )
 
         async with app.run_test() as pilot:
-            await submit_link(pilot, app)
+            await enter_metadata(pilot, app)
 
             assert isinstance(app.screen, ConfirmScreen)
             assert app.screen.query_one("#rate_limit", Input).value == "7.0"
@@ -351,7 +530,7 @@ class TestConfirmScreen:
         app = ExporterApp(load_metadata=loader(single_team_chapters()), build=build)
 
         async with app.run_test() as pilot:
-            await submit_link(pilot, app)
+            await enter_metadata(pilot, app)
             assert isinstance(app.screen, ConfirmScreen)
             app.screen.query_one("#rate_limit", Input).value = "11"
             app.screen.query_one("#chapters", Input).value = "2-4"
@@ -367,7 +546,7 @@ class TestConfirmScreen:
         app = ExporterApp(load_metadata=loader(single_team_chapters()))
 
         async with app.run_test() as pilot:
-            await submit_link(pilot, app)
+            await enter_metadata(pilot, app)
             app.screen.query_one("#rate_limit", Input).value = "abc"
             await pilot.click("#start")
             await pilot.pause()
@@ -379,7 +558,7 @@ class TestConfirmScreen:
         app = ExporterApp(load_metadata=loader(single_team_chapters()))
 
         async with app.run_test() as pilot:
-            await submit_link(pilot, app)
+            await enter_metadata(pilot, app)
 
             assert len(app.screen.query("#charset")) == 0
 
@@ -387,7 +566,7 @@ class TestConfirmScreen:
         app = ExporterApp(load_metadata=loader(single_team_chapters()))
 
         async with app.run_test() as pilot:
-            await submit_link(pilot, app)
+            await enter_metadata(pilot, app)
             app.screen.query_one("#preset", Select).value = "crosspoint"
             await pilot.pause()
 
@@ -402,7 +581,7 @@ class TestConfirmScreen:
         app = ExporterApp(load_metadata=loader(single_team_chapters()))
 
         async with app.run_test() as pilot:
-            await submit_link(pilot, app)
+            await enter_metadata(pilot, app)
             preset = app.screen.query_one("#preset", Select)
             preset.value = "medium"
             await pilot.pause()
@@ -426,7 +605,7 @@ class TestConfirmScreen:
         app = ExporterApp(load_metadata=loader(single_team_chapters()), build=build)
 
         async with app.run_test() as pilot:
-            await submit_link(pilot, app)
+            await enter_metadata(pilot, app)
             app.screen.query_one("#preset", Select).value = "max-compression"
             await pilot.pause()
             app.screen.query_one("#quality", Input).value = "99"
@@ -455,6 +634,9 @@ class TestConfirmScreen:
 
             async def fetch_chapters(self, slug: str) -> list[Chapter]:
                 return multi_team_chapters()
+
+            async def fetch_covers(self, slug: str) -> tuple[Cover, ...]:
+                return COVERS
 
         monkeypatch.setattr("ranobelib_epub.source.client.RanobeLibClient", FakeClient)
         monkeypatch.setattr("ranobelib_epub.source.api.RanobeLibSource", FakeSource)
@@ -640,6 +822,9 @@ class TestReportScreen:
             assert isinstance(app.screen, TranslationScreen)
             assert app.screen.query_one("#prompt", Static) is not None
             await pilot.click("#continue")
+            await pilot.pause()
+            assert isinstance(app.screen, MetadataScreen)
+            await pilot.click("#next")
             await pilot.pause()
             assert isinstance(app.screen, ConfirmScreen)
             await pilot.click("#start")

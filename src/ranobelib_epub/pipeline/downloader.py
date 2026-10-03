@@ -32,7 +32,7 @@ from ..images.pipeline import (
     epub_filename,
     fetch_image,
 )
-from ..models import Book, Chapter, ChapterContent
+from ..models import Chapter, ChapterContent
 from ..source.api import (
     CHAPTER_PATH,
     NO_BRANCH_REASON,
@@ -215,11 +215,17 @@ class ChapterDownloader:
 
         return resolver, assets
 
-    async def fetch_cover(self, book: Book) -> ImageAsset | None:
-        """Обложка книги, если она объявлена и доступна."""
+    async def fetch_cover(self, cover_url: str | None) -> ImageAsset | None:
+        """Обложка книги по готовому URL, если она объявлена и доступна.
+
+        URL приходит из резолвера (`resolve_cover_url`): выбранная обложка карусели,
+        отказ (`None`) или обложка книги по умолчанию.
+        """
         if not self.include_images:
             return None
-        url = absolute_url({"url": book.cover or ""})
+        if not cover_url:
+            return None
+        url = absolute_url({"url": cover_url})
         if not url:
             return None
         try:
