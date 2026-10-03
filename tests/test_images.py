@@ -11,6 +11,7 @@ from PIL import Image
 
 from ranobelib_epub.convert.tiptap import convert_document
 from ranobelib_epub.images.pipeline import (
+    DEFAULT_MAX_MB,
     DEFAULT_MAX_WIDTH,
     IMAGE_HEADERS,
     SITE_ORIGIN,
@@ -23,9 +24,9 @@ from ranobelib_epub.images.pipeline import (
     image_keys,
     keep_original,
     mark_missing,
-    needs_compression,
     placeholder,
     resolve_attachments,
+    should_compress,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -185,16 +186,45 @@ class TestNoCompression:
 
         assert keep_original(jpeg).mime == "image/jpeg"
 
-    def test_small_image_below_limit_is_untouched(self, real_png: bytes) -> None:
-        limit = len(real_png) / 1024 / 1024 + 1
+    def test_small_jpeg_below_limit_is_untouched(self) -> None:
+        assert should_compress(100_000, "JPEG", 800, 600, 0.5, 1280) is False
 
-        assert needs_compression(len(real_png), limit) is False
-        assert needs_compression(len(real_png), 0) is False
+    def test_large_jpeg_above_limit_is_compressed(self) -> None:
+        assert should_compress(2_000_000, "JPEG", 800, 600, 0.5, 1280) is True
 
-    def test_image_above_limit_is_compressed(self, real_png: bytes) -> None:
-        limit = len(real_png) / 1024 / 1024 - 1
+    def test_png_is_compressed_regardless_of_threshold(self, real_png: bytes) -> None:
+        assert should_compress(len(real_png), "PNG", 2210, 1582, 0.5, 1280) is True
 
-        assert needs_compression(len(real_png), limit) is True
+    def test_wide_jpeg_is_compressed(self) -> None:
+        assert should_compress(100_000, "JPEG", 2000, 1000, 0.5, 1280) is True
+
+    def test_zero_limit_disables_compression(self) -> None:
+        assert should_compress(5_000_000, "PNG", 4000, 3000, 0, 1280) is False
+
+    def test_default_threshold_is_recalibrated(self) -> None:
+        assert DEFAULT_MAX_MB == 0.5
+
+    def test_filter_and_compress_converts_small_png(self) -> None:
+        source = Image.new("RGB", (100, 100), (10, 20, 30))
+        buffer = io.BytesIO()
+        source.save(buffer, format="PNG")
+
+        asset = filter_and_compress(buffer.getvalue())
+
+        assert asset.compressed is True
+        assert asset.mime == "image/jpeg"
+
+    def test_filter_and_compress_keeps_small_jpeg(self) -> None:
+        source = Image.new("RGB", (100, 100), (10, 20, 30))
+        buffer = io.BytesIO()
+        source.save(buffer, format="JPEG")
+        raw = buffer.getvalue()
+
+        asset = filter_and_compress(raw)
+
+        assert asset.compressed is False
+        assert asset.data == raw
+        assert asset.mime == "image/jpeg"
 
 
 class TestFilenames:

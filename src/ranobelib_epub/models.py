@@ -179,6 +179,8 @@ class Report:
     age_restriction_id: int | None = None
     age_restriction_label: str | None = None
     age_confirmed_chapters: int = 0
+    images_deduplicated: int = 0
+    image_bytes_saved: int = 0
     file_size: int | None = None
     output_path: str | None = None
     notes: list[str] = field(default_factory=list)

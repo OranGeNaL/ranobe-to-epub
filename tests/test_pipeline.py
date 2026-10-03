@@ -154,6 +154,50 @@ class TestReportFields:
         assert "https://x/y.png" in text
 
 
+class TestImageOptimizationReport:
+    def test_compressed_image_saving_is_accumulated(self) -> None:
+        recorder = ReportRecorder()
+
+        recorder.image_optimized(1_000_000, 200_000)
+
+        assert recorder.report.image_bytes_saved == 800_000
+        assert recorder.report.images_deduplicated == 0
+
+    def test_negative_compression_saving_is_clamped(self) -> None:
+        recorder = ReportRecorder()
+
+        recorder.image_optimized(1_000, 5_000)
+
+        assert recorder.report.image_bytes_saved == 0
+
+    def test_deduplicated_image_counts_and_saves_full_file(self) -> None:
+        recorder = ReportRecorder()
+
+        recorder.image_optimized(500_000, 250_000, deduplicated=True)
+
+        assert recorder.report.images_deduplicated == 1
+        assert recorder.report.image_bytes_saved == 250_000
+
+    def test_render_shows_optimization_lines_when_present(self) -> None:
+        recorder = ReportRecorder()
+        recorder.image_optimized(1_000_000, 200_000)
+        recorder.image_optimized(500_000, 250_000, deduplicated=True)
+
+        text = recorder.render()
+
+        assert "дедуплицировано изображений: 1" in text
+        assert "экономия на изображениях" in text
+
+    def test_render_omits_optimization_lines_when_absent(self) -> None:
+        recorder = ReportRecorder()
+        recorder.chapter_built()
+
+        text = recorder.render()
+
+        assert "дедуплицировано" not in text
+        assert "экономия" not in text
+
+
 class TestMandatoryEvents:
     def test_age_confirmation_recorded(self) -> None:
         recorder = ReportRecorder()

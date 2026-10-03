@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 import zipfile
 from collections.abc import Awaitable, Callable, Iterable
@@ -92,6 +93,9 @@ class ChapterDownloader:
         self.quality = quality
         self.include_images = include_images
         self._image_index = 0
+        #: SHA-1 исходных байтов → уже встроенный актив. Дедупликация по
+        #: содержимому: одинаковые картинки на разных URL схлопываются в один файл.
+        self._image_cache: dict[bytes, ImageAsset] = {}
 
     async def _load(self, task: ChapterTask) -> tuple[ChapterContent | None, str | None]:
         """Сетевой шаг: пара `(содержимое, причина)`.
@@ -182,6 +186,13 @@ class ChapterDownloader:
 
             try:
                 raw = await fetch_image(self.source.client, url)
+                digest = hashlib.sha1(raw).digest()
+                cached = self._image_cache.get(digest)
+                if cached is not None:
+                    resolver[key] = chapter_image_href(cached.filename)
+                    self.recorder.image_optimized(len(raw), len(cached.data), deduplicated=True)
+                    self.progress.images_done += 1
+                    continue
                 asset = await compress_in_thread(
                     raw, self.max_image_mb, self.max_image_width, self.quality
                 )
@@ -194,6 +205,8 @@ class ChapterDownloader:
             self._image_index += 1
             asset.filename = epub_filename(self._image_index, asset.mime)
             asset.source_url = url
+            self._image_cache[digest] = asset
+            self.recorder.image_optimized(len(raw), len(asset.data), deduplicated=False)
             resolver[key] = chapter_image_href(asset.filename)
             assets.append(asset)
             self.progress.images_done += 1
@@ -209,6 +222,13 @@ class ChapterDownloader:
             return None
         try:
             raw = await fetch_image(self.source.client, url)
+            digest = hashlib.sha1(raw).digest()
+            cached = self._image_cache.get(digest)
+            if cached is not None:
+                self.recorder.image_optimized(len(raw), len(cached.data), deduplicated=True)
+                if self.on_cover is not None:
+                    self.on_cover(cached.filename)
+                return cached
             asset = await compress_in_thread(
                 raw, self.max_image_mb, self.max_image_width, self.quality
             )
@@ -218,6 +238,8 @@ class ChapterDownloader:
         self._image_index += 1
         asset.filename = epub_filename(self._image_index, asset.mime)
         asset.source_url = url
+        self._image_cache[digest] = asset
+        self.recorder.image_optimized(len(raw), len(asset.data), deduplicated=False)
         if self.on_cover is not None:
             self.on_cover(asset.filename)
         return asset

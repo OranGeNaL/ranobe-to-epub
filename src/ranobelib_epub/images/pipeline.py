@@ -37,7 +37,7 @@ IMAGE_HEADERS = {
 
 DEFAULT_MAX_WIDTH = 1280
 DEFAULT_QUALITY = 80
-DEFAULT_MAX_MB = 5.0
+DEFAULT_MAX_MB = 0.5
 
 
 def attachment_key(entry: dict | str) -> str:
@@ -209,13 +209,28 @@ def keep_original(raw: bytes) -> ImageAsset:
     return ImageAsset(filename="", data=raw, source_url="", mime=mime, compressed=False)
 
 
-def needs_compression(size_bytes: int, max_image_mb: float) -> bool:
-    """Следует ли перекодировать изображение размера `size_bytes`.
+def should_compress(
+    size_bytes: int,
+    image_format: str | None,
+    width: int,
+    height: int,
+    max_image_mb: float = DEFAULT_MAX_MB,
+    max_width: int = DEFAULT_MAX_WIDTH,
+) -> bool:
+    """Следует ли перекодировать изображение с такими параметрами.
 
-    `max_image_mb == 0` отключает сжатие целиком (сценарий «Лимит сжатия отключён»).
+    Перекодирование нужно, если изображение шире `max_width`, если исходный
+    формат не JPEG (PNG и GIF всегда перекодируются в JPEG) или если его размер
+    в байтах превышает порог `max_image_mb`. `max_image_mb == 0` отключает сжатие
+    целиком (сценарий «Лимит сжатия отключён»), и тогда исходные байты
+    сохраняются независимо от формата и размеров.
     """
     if max_image_mb <= 0:
         return False
+    if width > max_width:
+        return True
+    if (image_format or "").upper() != "JPEG":
+        return True
     return size_bytes > max_image_mb * 1024 * 1024
 
 
@@ -283,7 +298,16 @@ def filter_and_compress(
     max_width: int = DEFAULT_MAX_WIDTH,
     quality: int = DEFAULT_QUALITY,
 ) -> ImageAsset:
-    """Точка входа: решает, сжимать ли, и возвращает готовый актив."""
-    if not needs_compression(len(raw), max_image_mb):
+    """Точка входа: решает по заголовку, сжимать ли, и возвращает готовый актив."""
+    with Image.open(io.BytesIO(raw)) as opened:
+        compress = should_compress(
+            len(raw),
+            opened.format,
+            opened.width,
+            opened.height,
+            max_image_mb,
+            max_width,
+        )
+    if not compress:
         return keep_original(raw)
     return compress_image(raw, max_width=max_width, quality=quality)

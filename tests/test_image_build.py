@@ -121,7 +121,8 @@ class TestImageDownload:
     def test_numbers_are_global_across_chapters(self) -> None:
         url_a = "https://ranobelib.me/uploads/ranobe/1/a.png"
         url_b = "https://ranobelib.me/uploads/ranobe/1/b.png"
-        client = FakeClient({url_a: png_bytes(), url_b: png_bytes()})
+        # Разные байты: одинаковые схлопнулись бы дедупликацией по содержимому.
+        client = FakeClient({url_a: png_bytes(), url_b: png_bytes(color=(10, 10, 200, 128))})
         source = FakeSource(
             {
                 1: make_content(("a",), (Attachment(name="a", url="/uploads/ranobe/1/a.png"),)),
@@ -140,6 +141,58 @@ class TestImageDownload:
 
         names = [asset.filename for item in results for asset in item.assets]
         assert names == ["Images/img_0001.jpg", "Images/img_0002.jpg"]
+
+    def test_identical_images_in_one_chapter_are_deduplicated(self) -> None:
+        url_a = "https://ranobelib.me/uploads/ranobe/1/a.png"
+        url_b = "https://ranobelib.me/uploads/ranobe/1/b.png"
+        payload = png_bytes()
+        client = FakeClient({url_a: payload, url_b: payload})
+        source = FakeSource(
+            {
+                1: make_content(
+                    ("a", "b"),
+                    (
+                        Attachment(name="a", url="/uploads/ranobe/1/a.png"),
+                        Attachment(name="b", url="/uploads/ranobe/1/b.png"),
+                    ),
+                )
+            },
+            client,
+        )
+        recorder = ReportRecorder(total_chapters=1)
+        downloader = ChapterDownloader(source, recorder, max_image_mb=1e-9)
+
+        results = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
+
+        item = results[0]
+        assert len(item.assets) == 1
+        assert item.fragment.count("<img") == 2
+        assert item.fragment.count('src="../Images/img_0001.jpg"') == 2
+        assert recorder.report.images_deduplicated == 1
+
+    def test_duplicate_numbering_is_deterministic(self) -> None:
+        url_a = "https://ranobelib.me/uploads/ranobe/1/a.png"
+        url_b = "https://ranobelib.me/uploads/ranobe/1/b.png"
+        payload = png_bytes()
+
+        def build() -> list[str]:
+            client = FakeClient({url_a: payload, url_b: payload})
+            source = FakeSource(
+                {
+                    1: make_content(("a",), (Attachment(name="a", url="/uploads/ranobe/1/a.png"),)),
+                    2: make_content(("b",), (Attachment(name="b", url="/uploads/ranobe/1/b.png"),)),
+                },
+                client,
+            )
+            downloader = ChapterDownloader(source, ReportRecorder(total_chapters=2))
+            results = asyncio.run(
+                downloader.fetch_all(
+                    [ChapterTask(chapter(1)), ChapterTask(chapter(2))], book_slug="slug"
+                )
+            )
+            return [asset.filename for item in results for asset in item.assets]
+
+        assert build() == build() == ["Images/img_0001.jpg"]
 
     def test_missing_attachment_leaves_placeholder(self) -> None:
         client = FakeClient()
@@ -218,6 +271,26 @@ class TestCover:
         assert cover is not None
         assert cover.filename == "Images/img_0001.jpg"
         assert cover.data[:2] == b"\xff\xd8"
+
+    def test_cover_reusing_chapter_image_is_not_duplicated(self) -> None:
+        url = "https://ranobelib.me/uploads/ranobe/1/a.png"
+        cover_url = "https://ranobelib.me/uploads/covers/a.png"
+        payload = png_bytes()
+        client = FakeClient({url: payload, cover_url: payload})
+        source = FakeSource(
+            {1: make_content(("a",), (Attachment(name="a", url="/uploads/ranobe/1/a.png"),))},
+            client,
+        )
+        recorder = ReportRecorder(total_chapters=1)
+        downloader = ChapterDownloader(source, recorder, max_image_mb=1e-9)
+        fetched = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
+        book = Book(slug_url="94231--x", cover="/uploads/covers/a.png")
+
+        cover = asyncio.run(downloader.fetch_cover(book))
+
+        assert cover is not None
+        assert cover.filename == fetched[0].assets[0].filename
+        assert recorder.report.images_deduplicated == 1
 
     def test_missing_cover_is_recorded_not_fatal(self) -> None:
         client = FakeClient()

@@ -63,6 +63,21 @@ class ReportRecorder:
         self.report.removed_characters += stats.removed_characters
         self.report.chapters_with_removed_characters += 1
 
+    def image_optimized(
+        self, original_bytes: int, final_bytes: int, deduplicated: bool = False
+    ) -> None:
+        """Учитывает эффект сжатия или дедупликации изображения (решение 4).
+
+        Для дедупликата экономия — это весь не встроенный файл; для сжатого —
+        разница исходного и итогового размера, но не отрицательная, иначе
+        мелкие PNG, ставшие чуть больше в JPEG, уменьшали бы итог.
+        """
+        if deduplicated:
+            self.report.images_deduplicated += 1
+            self.report.image_bytes_saved += max(0, final_bytes)
+            return
+        self.report.image_bytes_saved += max(0, original_bytes - final_bytes)
+
     def age_confirmed(self, level: int | None, label: str, message: str) -> None:
         self.report.age_restriction_id = level
         self.report.age_restriction_label = label
@@ -92,6 +107,11 @@ class ReportRecorder:
             f"  удалено символов: {report.removed_characters} "
             f"в {report.chapters_with_removed_characters} главах",
         ]
+
+        if report.images_deduplicated:
+            lines.append(f"  дедуплицировано изображений: {report.images_deduplicated}")
+        if report.image_bytes_saved:
+            lines.append(f"  экономия на изображениях: {_human_size(report.image_bytes_saved)}")
 
         if report.age_confirmed:
             lines.append(
