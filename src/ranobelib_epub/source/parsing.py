@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..convert.html import html_to_document
 from ..models import Attachment, Book, Chapter, ChapterContent, TranslationBranch
 from .numbering import apply_numbering
 
@@ -216,7 +217,13 @@ def parse_chapter_content(
             )
         )
 
-    doc = _as_dict(data.get("content")) or None
+    raw_content = data.get("content")
+    if isinstance(raw_content, str):
+        # Часть глав отдаётся готовой HTML-строкой, а не ProseMirror-JSON; без
+        # нормализации такая глава выходила пустой (белые страницы).
+        doc = html_to_document(raw_content)
+    else:
+        doc = _as_dict(raw_content) or None
     return ChapterContent(
         doc=doc,
         attachments=tuple(attachments),

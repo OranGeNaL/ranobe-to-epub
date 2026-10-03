@@ -198,3 +198,21 @@ class TestParseChapterContent:
 
         assert content.available is False
         assert content.doc is None
+
+    def test_html_string_content_is_normalized(self) -> None:
+        payload = {
+            "data": {
+                "content": (
+                    '<p>Привет</p><p><img src="https://ranobelib.me/uploads/x/pic_1.png" /></p>'
+                ),
+                "attachments": [{"name": "pic_1", "url": "/uploads/x/pic_1.png"}],
+            }
+        }
+
+        content = parse_chapter_content(payload)
+
+        assert content.available
+        assert content.doc is not None
+        assert [node["type"] for node in content.doc["content"]] == ["paragraph", "paragraph"]
+        image = content.doc["content"][1]["content"][0]
+        assert image["attrs"]["images"] == [{"image": "pic_1"}]
