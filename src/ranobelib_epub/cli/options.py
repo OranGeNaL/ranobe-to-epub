@@ -8,13 +8,13 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ..charset.profiles import DEFAULT_PROFILE, PROFILES
 from ..epub.naming import sanitize as sanitize_name
 from ..images.pipeline import DEFAULT_MAX_MB, DEFAULT_MAX_WIDTH, DEFAULT_QUALITY
-from ..models import Book
+from ..models import Book, Chapter
 from ..source.client import DEFAULT_RATE_LIMIT
 from ..source.translations import DEFAULT_TRANSLATION
 
@@ -40,7 +40,8 @@ class _Parser(argparse.ArgumentParser):
         raise ArgumentError(message)
 
 
-def _positive_float(value: str) -> float:
+def positive_float(value: str) -> float:
+    """Неотрицательное число с человеческим сообщением (13.1, задача 1.1)."""
     try:
         number = float(value)
     except ValueError as error:
@@ -50,7 +51,8 @@ def _positive_float(value: str) -> float:
     return number
 
 
-def _positive_int(value: str) -> int:
+def positive_int(value: str) -> int:
+    """Неотрицательное целое с человеческим сообщением (13.1, задача 1.1)."""
     try:
         number = int(value)
     except ValueError as error:
@@ -60,7 +62,16 @@ def _positive_int(value: str) -> int:
     return number
 
 
-def _charset(value: str) -> str:
+def jpeg_quality(value: str) -> int:
+    """Качество JPEG от 1 до 100 (задача 1.1)."""
+    number = positive_int(value)
+    if not 1 <= number <= 100:
+        raise ArgumentError(f"качество должно быть от 1 до 100, получено «{value}»")
+    return number
+
+
+def charset_profile(value: str) -> str:
+    """Известный профиль набора символов (13.1, задача 1.1)."""
     if value not in PROFILES:
         options = ", ".join(PROFILES)
         raise ArgumentError(f"неизвестный профиль «{value}». Доступны: {options}")
@@ -69,11 +80,11 @@ def _charset(value: str) -> str:
 
 def _validate(namespace: argparse.Namespace) -> None:
     """Проверки значений с человеческими сообщениями."""
-    _positive_float(str(namespace.max_image_mb))
-    _positive_int(str(namespace.max_image_width))
-    _positive_float(str(namespace.rate_limit))
-    _positive_int(str(namespace.retries))
-    _charset(namespace.charset)
+    positive_float(str(namespace.max_image_mb))
+    positive_int(str(namespace.max_image_width))
+    positive_float(str(namespace.rate_limit))
+    positive_int(str(namespace.retries))
+    charset_profile(namespace.charset)
 
 
 def parse_chapter_selection(value: str) -> tuple[frozenset[str], frozenset[int], frozenset[int]]:
@@ -155,6 +166,50 @@ class Options:
             f"главы: {self.chapters or 'все'}",
             f"троттлинг: {self.rate_limit}/с, повторы: {self.retries}",
         ]
+
+
+def build_options(
+    base: Options,
+    *,
+    rate_limit: str,
+    retries: str,
+    include_images: bool,
+    max_image_mb: str,
+    max_image_width: str,
+    quality: str,
+    output: str,
+    chapters: str,
+) -> Options:
+    """Собирает `Options` из значений формы TUI, проверяя их общими правилами (задача 1.2).
+
+    Неотредактированные поля (`slug_url`, `charset`, `team`, `no_tui`) переносятся
+    из `base` без изменений. Пустой путь вывода означает имя по умолчанию, пустая
+    выборка — все главы.
+    """
+    output_path = Path(output.strip()) if output.strip() else None
+    chapters_value = chapters.strip() or None
+    options = replace(
+        base,
+        rate_limit=positive_float(rate_limit),
+        retries=positive_int(retries),
+        include_images=include_images,
+        max_image_mb=positive_float(max_image_mb),
+        max_image_width=positive_int(max_image_width),
+        quality=jpeg_quality(quality),
+        output=output_path,
+        chapters=chapters_value,
+    )
+    if options.chapters is not None:
+        parse_chapter_selection(options.chapters)
+    return options
+
+
+def apply_chapter_selection(options: Options, chapters: list[Chapter]) -> list[Chapter]:
+    """Применяет `--chapters` к списку глав перед сборкой (задача 2.2)."""
+    selection = options.selection
+    if selection is None:
+        return chapters
+    return selection.apply(chapters)
 
 
 def build_parser() -> argparse.ArgumentParser:

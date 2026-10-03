@@ -36,7 +36,7 @@ from ..source.translations import (
     compute_coverage,
 )
 from ..source.url import parse_book_url
-from .options import ArgumentError, Options, parse_args
+from .options import ArgumentError, Options, apply_chapter_selection, parse_args
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -83,28 +83,18 @@ def progress_line(progress: Progress) -> str:
 async def collect(
     source: RanobeLibSource,
     slug: str,
-    options: Options,
     recorder: ReportRecorder,
     printer: Printer,
 ) -> tuple[Book, list[Chapter]]:
-    """Метаданные, главы, выбор ветки и подтверждение возраста."""
+    """Метаданные, главы и подтверждение возраста.
+
+    Выборка глав здесь не применяется: её задаёт пользователь (в том числе в TUI),
+    поэтому она учитывается перед формированием задач в `run_build` (задача 2.2).
+    """
     book = await source.fetch_book(slug)
     chapters = await source.fetch_chapters(slug)
     assign_labels(chapters)
     chapters = sort_chapters(chapters)
-
-    apply_selection(chapters, options.team)
-    selection = options.selection
-    if selection is not None:
-        chapters = selection.apply(chapters)
-
-    recorder.report.total_chapters = len(chapters)
-    coverage = compute_coverage(chapters, options.team)
-
-    if coverage.is_partial:
-        printer.line(
-            f"Внимание: выбранный перевод покрывает {coverage.covered} из {coverage.total} глав"
-        )
 
     if requires_confirmation(book):
         message = confirm_age(book, recorder.report)
@@ -129,7 +119,17 @@ async def run_build(
 
     try:
         source = RanobeLibSource(active)
-        book, chapters = await collect(source, slug, options, recorder, printer)
+        book, chapters = await collect(source, slug, recorder, printer)
+
+        chapters = apply_chapter_selection(options, chapters)
+        apply_selection(chapters, options.team)
+        recorder.report.total_chapters = len(chapters)
+
+        coverage = compute_coverage(chapters, options.team)
+        if coverage.is_partial:
+            printer.line(
+                f"Внимание: выбранный перевод покрывает {coverage.covered} из {coverage.total} глав"
+            )
 
         printer.line(
             f"Книга: {book.title} · глав: {len(chapters)} · "

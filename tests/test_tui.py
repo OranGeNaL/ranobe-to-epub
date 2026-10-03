@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from textual.widgets import (
+    Checkbox,
     Collapsible,
     Input,
     OptionList,
@@ -19,6 +20,7 @@ from textual.widgets import (
     Static,
 )
 
+from ranobelib_epub.cli.options import Options
 from ranobelib_epub.models import Book, Chapter, TranslationBranch
 from ranobelib_epub.pipeline.report import ChapterEvent, Progress, ReportRecorder
 from ranobelib_epub.tui.app import (
@@ -30,6 +32,7 @@ from ranobelib_epub.tui.app import (
     ProgressScreen,
     ReportScreen,
     TranslationScreen,
+    default_load_metadata,
 )
 
 LINK = "https://ranobelib.me/book/94231--rezero"
@@ -300,6 +303,110 @@ class TestTranslationScreen:
             await submit_link(pilot, app)
 
             assert str(app.screen.query_one("#warning", Static).content) == ""
+
+
+class TestConfirmScreen:
+    """Задачи 3.1–3.4, 4.2: редактируемая форма параметров выгрузки."""
+
+    async def test_form_is_prefilled_from_options(self) -> None:
+        app = ExporterApp(
+            load_metadata=loader(single_team_chapters()),
+            options=Options(
+                rate_limit=7.0,
+                retries=5,
+                include_images=False,
+                max_image_mb=2.0,
+                max_image_width=900,
+                quality=70,
+                output="book.epub",
+                chapters="1-3",
+            ),
+        )
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+
+            assert isinstance(app.screen, ConfirmScreen)
+            assert app.screen.query_one("#rate_limit", Input).value == "7.0"
+            assert app.screen.query_one("#retries", Input).value == "5"
+            assert app.screen.query_one("#max_image_mb", Input).value == "2.0"
+            assert app.screen.query_one("#max_image_width", Input).value == "900"
+            assert app.screen.query_one("#quality", Input).value == "70"
+            assert app.screen.query_one("#output", Input).value == "book.epub"
+            assert app.screen.query_one("#chapters", Input).value == "1-3"
+            assert app.screen.query_one("#include_images", Checkbox).value is False
+            assert len(app.screen.query(".field_label")) == 7
+
+    async def test_edits_flow_into_build_plan(self) -> None:
+        captured: dict = {}
+
+        async def build(plan, on_progress, on_notice):
+            captured["plan"] = plan
+            recorder = ReportRecorder(total_chapters=len(plan.chapters))
+            recorder.finished("/tmp/book.epub", 1)
+            return recorder
+
+        app = ExporterApp(load_metadata=loader(single_team_chapters()), build=build)
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            assert isinstance(app.screen, ConfirmScreen)
+            app.screen.query_one("#rate_limit", Input).value = "11"
+            app.screen.query_one("#chapters", Input).value = "2-4"
+            await pilot.click("#start")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+        plan = captured["plan"]
+        assert plan.options.rate_limit == 11.0
+        assert [c.id for c in plan.chapters] == [2, 3, 4]
+
+    async def test_invalid_value_stays_and_shows_error(self) -> None:
+        app = ExporterApp(load_metadata=loader(single_team_chapters()))
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            app.screen.query_one("#rate_limit", Input).value = "abc"
+            await pilot.click("#start")
+            await pilot.pause()
+
+            assert isinstance(app.screen, ConfirmScreen)
+            assert "Ошибка" in str(app.screen.query_one("#form_error", Static).content)
+
+    async def test_charset_is_not_editable_in_form(self) -> None:
+        app = ExporterApp(load_metadata=loader(single_team_chapters()))
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+
+            assert len(app.screen.query("#charset")) == 0
+
+    async def test_default_load_metadata_keeps_all_chapters(self, monkeypatch) -> None:
+        class FakeClient:
+            def __init__(self, config) -> None:
+                self.config = config
+
+            async def aclose(self) -> None:
+                return None
+
+        class FakeSource:
+            def __init__(self, client) -> None:
+                self.client = client
+
+            async def fetch_book(self, slug: str) -> Book:
+                return BOOK
+
+            async def fetch_chapters(self, slug: str) -> list[Chapter]:
+                return multi_team_chapters()
+
+        monkeypatch.setattr("ranobelib_epub.source.client.RanobeLibClient", FakeClient)
+        monkeypatch.setattr("ranobelib_epub.source.api.RanobeLibSource", FakeSource)
+
+        meta = await default_load_metadata(LINK, Options(chapters="1-3"))
+
+        assert [c.id for c in meta.chapters] == list(range(1, 11)), (
+            "выборка глав применяется на этапе сборки, а не загрузки метаданных"
+        )
 
 
 class TestProgressScreen:

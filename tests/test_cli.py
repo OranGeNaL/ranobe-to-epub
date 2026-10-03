@@ -24,12 +24,18 @@ from ranobelib_epub.cli.main import (
 from ranobelib_epub.cli.options import (
     ArgumentError,
     Options,
+    apply_chapter_selection,
+    build_options,
+    charset_profile,
     default_filename,
     exit_code_for,
+    jpeg_quality,
     parse_args,
     parse_chapter_selection,
+    positive_float,
+    positive_int,
 )
-from ranobelib_epub.models import Book
+from ranobelib_epub.models import Book, Chapter
 from ranobelib_epub.pipeline.report import ChapterEvent, Progress
 
 URL = "https://ranobelib.me/book/94231--rezero"
@@ -178,6 +184,134 @@ class TestChapterSelection:
         selected = options.selection.apply(chapters)
 
         assert [c.id for c in selected] == [2, 3]
+
+
+class TestEditableOptions:
+    """Задача 4.1: переиспользуемые проверки и сборка Options из формы."""
+
+    def test_validators_accept_well_formed_values(self) -> None:
+        assert positive_float("2.5") == 2.5
+        assert positive_int("8") == 8
+        assert jpeg_quality("80") == 80
+        assert charset_profile("full") == "full"
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda: positive_float("abc"),
+            lambda: positive_float("-1"),
+            lambda: positive_int("-1"),
+            lambda: positive_int("1.5"),
+            lambda: jpeg_quality("0"),
+            lambda: jpeg_quality("101"),
+            lambda: charset_profile("wingdings"),
+        ],
+    )
+    def test_validators_reject_bad_values(self, call) -> None:
+        with pytest.raises(ArgumentError):
+            call()
+
+    def test_build_options_replaces_editable_fields(self, tmp_path: Path) -> None:
+        base = parse_args([URL, "--charset", "full", "--team", "V"])
+
+        options = build_options(
+            base,
+            rate_limit="9",
+            retries="7",
+            include_images=False,
+            max_image_mb="3.5",
+            max_image_width="1200",
+            quality="75",
+            output=str(tmp_path / "x.epub"),
+            chapters="2-4",
+        )
+
+        assert options.rate_limit == 9.0
+        assert options.retries == 7
+        assert options.include_images is False
+        assert options.max_image_mb == 3.5
+        assert options.max_image_width == 1200
+        assert options.quality == 75
+        assert options.output == tmp_path / "x.epub"
+        assert options.chapters == "2-4"
+        assert options.charset == "full", "не редактируемый в TUI профиль сохраняется"
+        assert options.team == "V"
+        assert options.slug_url == base.slug_url
+
+    def test_build_options_blank_output_and_chapters_mean_defaults(self) -> None:
+        options = build_options(
+            Options(),
+            rate_limit="4",
+            retries="3",
+            include_images=True,
+            max_image_mb="0",
+            max_image_width="800",
+            quality="90",
+            output="  ",
+            chapters=" ",
+        )
+
+        assert options.output is None
+        assert options.chapters is None
+
+    def test_build_options_propagates_argument_error(self) -> None:
+        with pytest.raises(ArgumentError, match="качество"):
+            build_options(
+                Options(),
+                rate_limit="4",
+                retries="3",
+                include_images=True,
+                max_image_mb="0",
+                max_image_width="800",
+                quality="0",
+                output="",
+                chapters="",
+            )
+
+    def test_apply_chapter_selection_filters_chapters(self) -> None:
+        options = parse_args([URL, "--chapters", "2-3"])
+        chapters = [
+            Chapter(id=index, volume=1, number=str(index), name="n", label=f"1.{index}")
+            for index in range(1, 6)
+        ]
+
+        assert [c.id for c in apply_chapter_selection(options, chapters)] == [2, 3]
+
+    def test_apply_chapter_selection_without_selection_returns_all(self) -> None:
+        chapters = [
+            Chapter(id=index, volume=1, number=str(index), name="n", label=f"1.{index}")
+            for index in range(1, 4)
+        ]
+
+        assert apply_chapter_selection(Options(), chapters) == chapters
+
+    def test_chapters_editing_affects_build_plan(self) -> None:
+        """Задача 4.2 (CLI-часть): правка выборки меняет набор собранных глав."""
+        options = parse_args([URL, "--no-tui", "--chapters", "1-20"])
+        chapters = _five_chapters()
+
+        assert [c.id for c in apply_chapter_selection(options, chapters)] == [1, 2, 3, 4, 5]
+
+        narrowed = build_options(
+            options,
+            rate_limit="4",
+            retries="3",
+            include_images=False,
+            max_image_mb="0",
+            max_image_width="800",
+            quality="80",
+            output="",
+            chapters="2-3",
+        )
+
+        assert [c.id for c in apply_chapter_selection(narrowed, chapters)] == [2, 3]
+
+
+def _five_chapters() -> list[Chapter]:
+    return [
+        Chapter(id=index, volume=1, number=str(index), name="n", label=f"1.{index}")
+        for index in range(1, 6)
+    ]
 
 
 class TestOutputName:

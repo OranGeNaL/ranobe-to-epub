@@ -20,6 +20,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
     Button,
+    Checkbox,
     Collapsible,
     Footer,
     Input,
@@ -30,7 +31,12 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from ..cli.options import Options
+from ..cli.options import (
+    ArgumentError,
+    Options,
+    apply_chapter_selection,
+    build_options,
+)
 from ..models import Book, Chapter
 from ..pipeline.downloader import coverage_note
 from ..pipeline.report import ChapterEvent, Progress, ReportRecorder
@@ -78,6 +84,11 @@ class ExporterApp(App[None]):
     #prompt { padding-bottom: 1; }
     .actions { height: auto; padding-top: 1; }
     .actions Button { margin-right: 2; }
+    #form { height: auto; }
+    .column { width: 1fr; height: auto; padding-right: 2; }
+    .column Input { width: 1fr; }
+    .field_label { padding-top: 1; }
+    #form_error { color: $error; }
     #details_box { height: auto; }
     #report { height: 1fr; }
     #log_panel { height: auto; }
@@ -116,9 +127,10 @@ class ExporterApp(App[None]):
     async def run_build(self, on_progress: ProgressSink, on_notice: NoticeSink) -> ReportRecorder:
         if self.metadata is None:
             raise RuntimeError("метаданные не загружены")
+        chapters = apply_chapter_selection(self.options, self.metadata.chapters)
         plan = BuildPlan(
             book=self.metadata.book,
-            chapters=self.metadata.chapters,
+            chapters=chapters,
             options=self.options,
             slug=self.metadata.slug,
             team=self.team,
@@ -254,36 +266,80 @@ class TranslationScreen(Screen[None]):
 
 
 class ConfirmScreen(Screen[None]):
-    """Шаг 3: параметры и запуск сборки."""
+    """Шаг 3: редактируемые параметры выгрузки и запуск сборки (3.1–3.4)."""
 
     def compose(self) -> ComposeResult:
         app = cast(ExporterApp, self.app)
-        lines = app.options.summary_lines()
+        options = app.options
         book = app.metadata.book if app.metadata else None
         chapters = app.metadata.chapters if app.metadata else []
-        text = "\n".join(
-            [
-                f"Книга: {book.title if book else '—'}",
-                f"Глав: {len(chapters)}",
-                f"Перевод: {app.team or DEFAULT_LABEL}",
-                "",
-                "Параметры:",
-                *lines,
-            ]
+        header = (
+            f"Книга: {book.title if book else '—'} · глав: {len(chapters)} · "
+            f"перевод: {app.team or DEFAULT_LABEL}"
         )
         with Vertical():
             yield Static("Подтверждение", id="prompt")
-            yield Static(text, id="summary")
+            yield Static(header, id="summary")
+            yield Static("Параметры выгрузки", id="form_title")
+            with Horizontal(id="form"):
+                with Vertical(classes="column"):
+                    yield Static("Лимит запросов в секунду", classes="field_label")
+                    yield Input(value=str(options.rate_limit), id="rate_limit", compact=True)
+                    yield Static("Число повторов", classes="field_label")
+                    yield Input(value=str(options.retries), id="retries", compact=True)
+                    yield Static("Порог сжатия, МБ (0 — без сжатия)", classes="field_label")
+                    yield Input(value=str(options.max_image_mb), id="max_image_mb", compact=True)
+                    yield Static("Максимальная ширина, px", classes="field_label")
+                    yield Input(
+                        value=str(options.max_image_width), id="max_image_width", compact=True
+                    )
+                with Vertical(classes="column"):
+                    yield Static("Качество JPEG (1–100)", classes="field_label")
+                    yield Input(value=str(options.quality), id="quality", compact=True)
+                    yield Static("Путь к файлу (пусто — имя по умолчанию)", classes="field_label")
+                    yield Input(value=options.output or "", id="output", compact=True)
+                    yield Static("Выборка глав (пусто — все)", classes="field_label")
+                    yield Input(value=options.chapters or "", id="chapters", compact=True)
+                    yield Checkbox(
+                        "Скачивать изображения",
+                        value=options.include_images,
+                        id="include_images",
+                    )
+            yield Static("", id="form_error")
             with Horizontal(classes="actions"):
                 yield Button("Начать", id="start", variant="primary")
                 yield Button("Отмена", id="cancel")
         yield Footer()
 
+    def _form_options(self) -> Options:
+        app = cast(ExporterApp, self.app)
+        return build_options(
+            app.options,
+            rate_limit=self.query_one("#rate_limit", Input).value,
+            retries=self.query_one("#retries", Input).value,
+            include_images=self.query_one("#include_images", Checkbox).value,
+            max_image_mb=self.query_one("#max_image_mb", Input).value,
+            max_image_width=self.query_one("#max_image_width", Input).value,
+            quality=self.query_one("#quality", Input).value,
+            output=self.query_one("#output", Input).value,
+            chapters=self.query_one("#chapters", Input).value,
+        )
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "start":
-            self.app.push_screen(ProgressScreen())
-        elif event.button.id == "cancel":
+        if event.button.id == "cancel":
             self.app.exit()
+            return
+        if event.button.id != "start":
+            return
+        app = cast(ExporterApp, self.app)
+        try:
+            options = self._form_options()
+        except ArgumentError as error:
+            self.query_one("#form_error", Static).update(f"Ошибка: {error}")
+            return
+        self.query_one("#form_error", Static).update("")
+        app.options = options
+        self.app.push_screen(ProgressScreen())
 
 
 class ProgressScreen(Screen[None]):
@@ -436,9 +492,6 @@ async def default_load_metadata(link: str, options: Options) -> Metadata:
 
     assign_labels(chapters)
     chapters = sort_chapters(chapters)
-    selection = options.selection
-    if selection is not None:
-        chapters = selection.apply(chapters)
     return Metadata(book=book, chapters=chapters, slug=slug)
 
 
