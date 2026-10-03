@@ -17,9 +17,11 @@ from ranobelib_epub.cli.main import (
     EXIT_FAILED,
     EXIT_OK,
     Printer,
+    configure_output_encoding,
     list_covers_flow,
     main,
     progress_line,
+    run,
     run_build,
 )
 from ranobelib_epub.cli.options import (
@@ -951,3 +953,35 @@ class TestRunBuildWithMetadata:
         overridden = apply_overrides(book, MetadataOverrides(title="Новое заглавие"))
 
         assert default_filename(overridden) == "Новое заглавие.epub"
+
+
+def test_help_survives_legacy_stdout_encoding(monkeypatch) -> None:
+    """Русская справка не падает при кодировке stdout вроде cp1252 (Windows).
+
+    На Windows с перенаправленным выводом Python берёт кодировку локали
+    (cp1252), и нелатинские символы в `--help` роняли бы программу
+    UnicodeEncodeError. `configure_output_encoding` переключает потоки на UTF-8.
+    """
+    buf = io.BytesIO()
+    stream = io.TextIOWrapper(buf, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(io.BytesIO(), encoding="cp1252"))
+    monkeypatch.setattr(sys, "argv", ["ranobelib-epub", "--help"])
+
+    with pytest.raises(SystemExit) as exc:
+        run()
+    assert exc.value.code == 0
+
+    stream.flush()
+    text = buf.getvalue().decode("utf-8")
+    assert "Скачивает книгу" in text
+
+
+def test_configure_output_encoding_skips_streams_without_reconfigure(monkeypatch) -> None:
+    """Потоки без reconfigure (например, StringIO) не ломают запуск."""
+    plain = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", plain)
+    monkeypatch.setattr(sys, "stderr", plain)
+
+    configure_output_encoding()
+    assert isinstance(sys.stdout, io.StringIO)

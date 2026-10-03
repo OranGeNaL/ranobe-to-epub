@@ -282,8 +282,23 @@ def run_tui_mode(options: Options) -> int:
     return EXIT_OK
 
 
+def configure_output_encoding() -> None:
+    """UTF-8 для stdout/stderr: русский вывод не падает при редиректе на Windows.
+
+    Python выбирает кодировку stdout по консоли или локали: на Windows с
+    перенаправленным выводом это cp1252, и нелатинские символы в справке или
+    журнале роняют программу (UnicodeEncodeError). Переключение на UTF-8 с
+    заменой неожиданных символов чинит и скомпилированный бинарь, и `uv run`.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Точка входа консольного скрипта (13.4, 13.6)."""
+    configure_output_encoding()
     printer = Printer()
     try:
         options = parse_args(list(argv) if argv is not None else None)
