@@ -10,7 +10,10 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from PIL import Image as PILImage
+from textual.containers import Horizontal, Vertical
 from textual.widgets import (
+    Button,
     Checkbox,
     Collapsible,
     Input,
@@ -20,6 +23,8 @@ from textual.widgets import (
     Select,
     Static,
 )
+from textual_image.widget import Image as ImageWidget
+from textual_image.widget import get_cell_size
 
 from ranobelib_epub.cli.options import Options
 from ranobelib_epub.models import Book, Chapter, Cover, TranslationBranch
@@ -56,6 +61,36 @@ COVERS = (
     Cover(id=18021734, order=0, label="Том 1", url="https://cover/x1.jpg"),
     Cover(id=18021735, order=1, label="Том 2", url="https://cover/x2.jpg"),
 )
+COVER_BOOK = Book(
+    slug_url="94231--rezero", rus_name="Re:Zero", cover="https://book/default.jpg"
+)
+
+
+def tiny_image() -> PILImage.Image:
+    """Миниатюра для заглушки превью: не требует сети и реальных пикселей."""
+    return PILImage.new("RGB", (60, 90), color=(120, 140, 180))
+
+
+def make_preview(images: dict[str, PILImage.Image] | None = None):
+    """Заглушка `fetch_preview`: запоминает вызовы и отдаёт изображения по URL."""
+    calls: list[str | None] = []
+    images = images or {}
+
+    async def load(url: str | None) -> PILImage.Image | None:
+        calls.append(url)
+        return images.get(url)
+
+    return load, calls
+
+
+async def no_preview(url: str | None) -> PILImage.Image | None:
+    """Заглушка без сети для тестов, которые превью не проверяют."""
+    return None
+
+
+def terminal_supports_images() -> bool:
+    """Заглушка: тесты считают, что терминал умеет рисовать изображения."""
+    return True
 
 
 def make_chapter(index: int, teams: tuple[str, ...]) -> Chapter:
@@ -432,6 +467,7 @@ class TestMetadataScreen:
         app = ExporterApp(
             load_metadata=build_loader(covers=COVERS),
             build=build,
+            fetch_preview=no_preview,
         )
 
         async with app.run_test() as pilot:
@@ -496,6 +532,206 @@ class TestMetadataScreen:
         plan = captured["plan"]
         assert plan.cover_disabled is True
         assert plan.cover_id is None
+
+
+class TestCoverPreview:
+    """Превью обложки на шаге «Метаданные и обложка» (решение 2–4 design.md)."""
+
+    async def test_volume_cover_shows_preview_image(self) -> None:
+        load, calls = make_preview({"https://cover/x1.jpg": tiny_image()})
+        app = ExporterApp(
+            load_metadata=build_loader(covers=COVERS),
+            fetch_preview=load,
+            supports_terminal_images=terminal_supports_images,
+        )
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            assert isinstance(app.screen, MetadataScreen)
+            assert app.screen.query_one("#cover_preview", Vertical).display is False
+
+            app.screen.query_one("#cover", Select).value = "18021734"
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            widget = app.screen.query_one("#cover_image", ImageWidget)
+            assert widget.display is True
+            assert isinstance(widget.image, PILImage.Image)
+            assert calls == ["https://cover/x1.jpg"]
+
+    async def test_default_cover_shows_site_cover(self) -> None:
+        load, calls = make_preview({"https://book/default.jpg": tiny_image()})
+        app = ExporterApp(
+            load_metadata=build_loader(book=COVER_BOOK),
+            fetch_preview=load,
+            supports_terminal_images=terminal_supports_images,
+        )
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            assert app.screen.query_one("#cover", Select).value == COVER_DEFAULT
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            widget = app.screen.query_one("#cover_image", ImageWidget)
+            assert widget.display is True
+            assert calls == ["https://book/default.jpg"]
+
+    async def test_no_cover_hides_preview(self) -> None:
+        load, _ = make_preview({"https://cover/x1.jpg": tiny_image()})
+        app = ExporterApp(
+            load_metadata=build_loader(covers=COVERS),
+            fetch_preview=load,
+            supports_terminal_images=terminal_supports_images,
+        )
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            select = app.screen.query_one("#cover", Select)
+            select.value = "18021734"
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app.screen.query_one("#cover_image", ImageWidget).display is True
+
+            select.value = COVER_NONE
+            await pilot.pause()
+
+            assert app.screen.query_one("#cover_preview", Vertical).display is False
+
+    async def test_preview_failure_shows_placeholder(self) -> None:
+        load, _ = make_preview({})
+        app = ExporterApp(
+            load_metadata=build_loader(covers=COVERS),
+            fetch_preview=load,
+            supports_terminal_images=terminal_supports_images,
+        )
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            app.screen.query_one("#cover", Select).value = "18021734"
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            placeholder = app.screen.query_one("#cover_placeholder", Static)
+            assert placeholder.display is True
+            assert "Нет превью" in str(placeholder.content)
+            assert app.screen.query_one("#cover_image", ImageWidget).display is False
+
+    async def test_preview_cached_per_url(self) -> None:
+        load, calls = make_preview({"https://cover/x1.jpg": tiny_image()})
+        app = ExporterApp(
+            load_metadata=build_loader(covers=COVERS),
+            fetch_preview=load,
+            supports_terminal_images=terminal_supports_images,
+        )
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            select = app.screen.query_one("#cover", Select)
+            select.value = "18021734"
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            select.value = "18021735"
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            select.value = "18021734"
+            await pilot.pause()
+
+            assert calls == ["https://cover/x1.jpg", "https://cover/x2.jpg"]
+
+    async def test_preview_preserves_aspect_ratio(self) -> None:
+        load, _ = make_preview({"https://cover/x1.jpg": tiny_image()})
+        app = ExporterApp(
+            load_metadata=build_loader(covers=COVERS),
+            fetch_preview=load,
+            supports_terminal_images=terminal_supports_images,
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await submit_link(pilot, app)
+            app.screen.query_one("#cover", Select).value = "18021734"
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            widget = app.screen.query_one("#cover_image", ImageWidget)
+            assert widget.outer_size.width > 20
+            cell = get_cell_size()
+            rendered = (widget.outer_size.width * cell.width) / (
+                widget.outer_size.height * cell.height
+            )
+            source = tiny_image().width / tiny_image().height
+            assert rendered == pytest.approx(source, rel=0.05)
+
+    async def test_terminal_without_image_support_shows_fallback_text(self) -> None:
+        load, calls = make_preview({"https://cover/x1.jpg": tiny_image()})
+        app = ExporterApp(
+            load_metadata=build_loader(covers=COVERS),
+            fetch_preview=load,
+            supports_terminal_images=lambda: False,
+        )
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            app.screen.query_one("#cover", Select).value = "18021734"
+            await pilot.pause()
+
+            placeholder = app.screen.query_one("#cover_placeholder", Static)
+            assert placeholder.display is True
+            assert "не поддерживает изображения" in str(placeholder.content)
+            assert app.screen.query_one("#cover_image", ImageWidget).display is False
+            assert calls == []
+
+    async def test_cover_select_first_and_preview_shifts_all_fields(self) -> None:
+        load, _ = make_preview({"https://book/default.jpg": tiny_image()})
+        app = ExporterApp(load_metadata=build_loader(book=COVER_BOOK), fetch_preview=load)
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            assert isinstance(app.screen, MetadataScreen)
+
+            main_row = app.screen.query_one("#main_row", Horizontal)
+            column = main_row.query_one(".column", Vertical)
+            preview = main_row.query_one("#cover_preview", Vertical)
+            assert preview is not None
+
+            fields = column.query(
+                "#cover, #title, #author, #description, #genres, #language, "
+                "#date, #publisher, #series, #series_index"
+            )
+            assert len(fields) == 10
+
+            kids = list(column.children)
+            assert kids[1] is column.query_one("#cover", Select)
+
+    async def test_preview_readable_at_80_columns(self) -> None:
+        load, _ = make_preview({"https://cover/x1.jpg": tiny_image()})
+        app = ExporterApp(
+            load_metadata=build_loader(covers=COVERS),
+            fetch_preview=load,
+            supports_terminal_images=terminal_supports_images,
+        )
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await submit_link(pilot, app)
+            assert isinstance(app.screen, MetadataScreen)
+            assert app.screen.query_one("#main_row", Horizontal).styles.layout.name == "vertical"
+
+            app.screen.query_one("#cover", Select).value = "18021734"
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            assert app.screen.query_one("#title", Input) is not None
+            assert app.screen.query_one("#cover", Select) is not None
+            assert app.screen.query_one("#next", Button) is not None
+            assert app.screen.query_one("#cover_image", ImageWidget).display is True
 
 
 class TestConfirmScreen:

@@ -10,14 +10,18 @@ event loop остаётся свободным, и окно перерисовы
 from __future__ import annotations
 
 import asyncio
+import io
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import ClassVar, cast
 
+from PIL import Image
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import (
     Button,
@@ -32,6 +36,7 @@ from textual.widgets import (
     Static,
 )
 from textual.widgets.option_list import Option
+from textual_image.widget import Image as ImageWidget
 
 from ..cli.options import (
     ArgumentError,
@@ -106,16 +111,31 @@ NoticeSink = Callable[[str], None]
 BuildFunction = Callable[[BuildPlan, ProgressSink, NoticeSink], Awaitable[ReportRecorder]]
 LoadFunction = Callable[[str, Options], Awaitable[Metadata]]
 SaveFunction = Callable[[], Awaitable[Path]]
+PreviewFetch = Callable[[str | None], Awaitable[Image.Image | None]]
+SupportsImages = Callable[[], bool]
 
 
 class ExporterApp(App[None]):
     """Приложение: хранит состояние сценария и переключает экраны."""
 
     CSS = """
-    Screen { padding: 1 2; }
-    #error { color: $error; }
-    #warning { color: $warning; }
+    $primary: #7aa2f7;
+    $accent: #2ac3de;
+    $surface: #1a1b26;
+    $panel: #1f2335;
+    $text: #c0caf5;
+    $text-muted: #565f89;
+    $error: #f7768e;
+    $warning: #e0af68;
+
+    Screen { padding: 1 2; background: $background; color: $text; }
+    .screen-title { text-style: bold; color: $text; padding-bottom: 1; }
     #prompt { padding-bottom: 1; }
+    .section { color: $text-muted; text-style: bold; padding-top: 1; padding-bottom: 1; }
+    .field_label { padding-top: 1; color: $text-muted; }
+    .error { color: $error; }
+    .notice { color: $warning; }
+    .card { border: round $border; padding: 1; }
     .actions { height: auto; padding-top: 1; }
     .actions Button { margin-right: 2; }
     #form { height: auto; }
@@ -124,12 +144,16 @@ class ExporterApp(App[None]):
     .preset_row Select { width: 1fr; }
     .column { width: 1fr; height: auto; padding-right: 2; }
     .column Input { width: 1fr; }
-    .field_label { padding-top: 1; }
-    #form_error { color: $error; }
     #details_box { height: auto; }
     #report { height: 1fr; }
     #log_panel { height: auto; }
     #chapter_log { height: 12; }
+
+    #cover { width: 1fr; }
+    #main_row { height: auto; }
+    #cover_preview { width: 40; height: 1fr; border: round $border; align: center middle; }
+    #cover_image { width: 100%; height: auto; }
+    #cover_placeholder { color: $text-muted; }
     """
 
     BINDINGS: ClassVar = [("q", "quit", "Выход")]
@@ -141,6 +165,8 @@ class ExporterApp(App[None]):
         load_metadata: LoadFunction | None = None,
         build: BuildFunction | None = None,
         save_partial: SaveFunction | None = None,
+        fetch_preview: PreviewFetch | None = None,
+        supports_terminal_images: SupportsImages | None = None,
     ) -> None:
         super().__init__()
         self.options = options or Options()
@@ -154,6 +180,9 @@ class ExporterApp(App[None]):
         self.interrupted: bool = False
         self.progress_queue: asyncio.Queue[Progress] = asyncio.Queue()
         self.save_partial = save_partial
+        self.preview_cache: dict[str, Image.Image] = {}
+        self.fetch_preview = fetch_preview or default_fetch_preview(self.options)
+        self.supports_terminal_images = supports_terminal_images or default_terminal_supports_images
         self._load = load_metadata or default_load_metadata
         self._build = build or default_build
 
@@ -188,14 +217,14 @@ class LinkScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("Введите ссылку на книгу ranobelib.me", id="prompt")
+            yield Static("Шаг 1 · Ссылка на книгу", id="prompt", classes="screen-title")
             yield Input(
                 placeholder="https://ranobelib.me/book/94231--...",
                 id="link",
             )
             with Horizontal(classes="actions"):
                 yield Button("Дальше", id="submit", variant="primary")
-            yield Static("", id="error")
+            yield Static("", id="error", classes="error")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -248,15 +277,17 @@ class TranslationScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("Выберите перевод", id="prompt")
+            yield Static("Шаг 2 · Выбор перевода", id="prompt", classes="screen-title")
             yield OptionList(id="teams")
             yield Static("", id="coverage")
-            yield Static("", id="warning")
+            yield Static("", id="warning", classes="notice")
             with Horizontal(classes="actions"):
                 yield Button("Продолжить", id="continue", variant="primary")
                 yield Button("Показать непокрытые", id="details")
                 yield Button("Назад", id="back")
-            yield VerticalScroll(Static("", id="details_text"), id="details_box")
+            yield VerticalScroll(
+                Static("", id="details_text"), id="details_box", classes="card"
+            )
         yield Footer()
 
     def on_mount(self) -> None:
@@ -331,73 +362,83 @@ class MetadataScreen(Screen[None]):
         app = cast(ExporterApp, self.app)
         book = app.metadata.book if app.metadata else None
         with Vertical():
-            yield Static("Метаданные и обложка", id="prompt")
-            with VerticalScroll():
-                yield Static("Название", classes="field_label")
-                yield Input(
-                    value=self._value(app, "title", book.title if book else ""),
-                    id="title",
-                    compact=True,
-                )
-                yield Static("Автор", classes="field_label")
-                yield Input(
-                    value=self._value(app, "author", (book.author if book else "") or ""),
-                    id="author",
-                    compact=True,
-                )
-                yield Static("Описание", classes="field_label")
-                yield Input(
-                    value=self._value(app, "description", (book.summary if book else "") or ""),
-                    id="description",
-                    compact=True,
-                )
-                yield Static("Жанры (через запятую)", classes="field_label")
-                yield Input(
-                    value=self._value(app, "genres", ", ".join(book.genres) if book else ""),
-                    id="genres",
-                    compact=True,
-                )
-                yield Static("Язык", classes="field_label")
-                yield Select(
-                    _language_choices(),
-                    value=self._language_value(app, book),
-                    allow_blank=False,
-                    compact=True,
-                    id="language",
-                )
-                yield Static("Дата (YYYY-MM-DD)", classes="field_label")
-                yield Input(
-                    value=self._value(app, "date", ""),
-                    id="date",
-                    compact=True,
-                )
-                yield Static("Издатель", classes="field_label")
-                yield Input(
-                    value=self._value(app, "publisher", ""),
-                    id="publisher",
-                    compact=True,
-                )
-                yield Static("Серия", classes="field_label")
-                yield Input(
-                    value=self._value(app, "series", ""),
-                    id="series",
-                    compact=True,
-                )
-                yield Static("Номер тома", classes="field_label")
-                yield Input(
-                    value=self._value(app, "series_index", ""),
-                    id="series_index",
-                    compact=True,
-                )
-                yield Static("Обложка", classes="field_label")
-                yield Select(
-                    self._cover_choices(app),
-                    value=self._cover_value(app),
-                    allow_blank=False,
-                    compact=True,
-                    id="cover",
-                )
-            yield Static("", id="form_error")
+            yield Static("Шаг 3 · Метаданные и обложка", id="prompt", classes="screen-title")
+            with VerticalScroll(), Horizontal(id="main_row"):
+                with Vertical(classes="column"):
+                    yield Static("Обложка", classes="section")
+                    yield Select(
+                        self._cover_choices(app),
+                        value=self._cover_value(app),
+                        allow_blank=False,
+                        compact=True,
+                        id="cover",
+                    )
+                    yield Static("Основное", classes="section")
+                    yield Static("Название", classes="field_label")
+                    yield Input(
+                        value=self._value(app, "title", book.title if book else ""),
+                        id="title",
+                        compact=True,
+                    )
+                    yield Static("Автор", classes="field_label")
+                    yield Input(
+                        value=self._value(app, "author", (book.author if book else "") or ""),
+                        id="author",
+                        compact=True,
+                    )
+                    yield Static("Описание", classes="field_label")
+                    yield Input(
+                        value=self._value(
+                            app, "description", (book.summary if book else "") or ""
+                        ),
+                        id="description",
+                        compact=True,
+                    )
+                    yield Static("Жанры (через запятую)", classes="field_label")
+                    yield Input(
+                        value=self._value(
+                            app, "genres", ", ".join(book.genres) if book else ""
+                        ),
+                        id="genres",
+                        compact=True,
+                    )
+                    yield Static("Язык", classes="field_label")
+                    yield Select(
+                        _language_choices(),
+                        value=self._language_value(app, book),
+                        allow_blank=False,
+                        compact=True,
+                        id="language",
+                    )
+                    yield Static("Издание", classes="section")
+                    yield Static("Дата (YYYY-MM-DD)", classes="field_label")
+                    yield Input(
+                        value=self._value(app, "date", ""),
+                        id="date",
+                        compact=True,
+                    )
+                    yield Static("Издатель", classes="field_label")
+                    yield Input(
+                        value=self._value(app, "publisher", ""),
+                        id="publisher",
+                        compact=True,
+                    )
+                    yield Static("Серия", classes="field_label")
+                    yield Input(
+                        value=self._value(app, "series", ""),
+                        id="series",
+                        compact=True,
+                    )
+                    yield Static("Номер тома", classes="field_label")
+                    yield Input(
+                        value=self._value(app, "series_index", ""),
+                        id="series_index",
+                        compact=True,
+                    )
+                with Vertical(id="cover_preview", classes="card"):
+                    yield Static("", id="cover_placeholder")
+                    yield ImageWidget(id="cover_image")
+            yield Static("", id="form_error", classes="error")
             with Horizontal(classes="actions"):
                 yield Button("Дальше", id="next", variant="primary")
                 yield Button("Назад", id="back")
@@ -428,7 +469,7 @@ class MetadataScreen(Screen[None]):
     def _cover_choices(self, app: ExporterApp) -> list[tuple[str, str]]:
         choices = [(COVER_DEFAULT_LABEL, COVER_DEFAULT), (COVER_NONE_LABEL, COVER_NONE)]
         covers = app.metadata.covers if app.metadata else ()
-        choices.extend((f"{cover.label} (id={cover.id})", str(cover.id)) for cover in covers)
+        choices.extend((cover.label, str(cover.id)) for cover in covers)
         return choices
 
     def _cover_value(self, app: ExporterApp) -> str:
@@ -506,6 +547,100 @@ class MetadataScreen(Screen[None]):
 
         app.push_screen(ConfirmScreen())
 
+    def on_mount(self) -> None:
+        self._apply_cover_layout(self.app.size.width)
+        self._refresh_preview()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "cover":
+            self._refresh_preview()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._apply_cover_layout(event.size.width)
+
+    def _apply_cover_layout(self, width: int) -> None:
+        """Раскладка формы: превью-панель справа от всех полей на широком терминале.
+
+        Текстовые медиа-запросы (`@media`) Textual 8 не поддерживает, поэтому порог
+        переноса обрабатывается по размеру экрана (решение 3 design.md). Панель превью
+        всегда сохраняет пропорции картинки: ширина фиксирована CSS, высота следует за
+        соотношением сторон (`height: auto`) либо растягивается на всю высоту формы
+        (`height: 1fr`) в горизонтальной раскладке.
+        """
+        try:
+            row = self.query_one("#main_row")
+            preview = self.query_one("#cover_preview")
+        except NoMatches:
+            return
+        if width < 100:
+            row.styles.layout = "vertical"
+            preview.styles.height = "auto"
+        else:
+            row.styles.layout = "horizontal"
+            preview.styles.height = "1fr"
+
+    def _cover_selection_url(self) -> str | None:
+        """URL выбранной обложки: по умолчанию — с сайта, том — из карусели, иначе нет."""
+        app = cast(ExporterApp, self.app)
+        selection = str(self.query_one("#cover", Select).value)
+        if selection == COVER_NONE:
+            return None
+        if selection == COVER_DEFAULT:
+            return app.metadata.book.cover if app.metadata else None
+        covers = app.metadata.covers if app.metadata else ()
+        for cover in covers:
+            if cover.id == int(selection):
+                return cover.url
+        return None
+
+    def _refresh_preview(self) -> None:
+        """Показывает превью для текущего выбора обложки: кэш, загрузка или скрытие."""
+        app = cast(ExporterApp, self.app)
+        url = self._cover_selection_url()
+        preview = self.query_one("#cover_preview", Vertical)
+        if url is None:
+            preview.display = False
+            return
+        preview.display = True
+        if not app.supports_terminal_images():
+            self._show_placeholder("Ваш терминал не поддерживает изображения")
+            return
+        cached = app.preview_cache.get(url)
+        if cached is not None:
+            self._show_image(cached)
+            return
+        self._show_placeholder("Загрузка…")
+        self.run_worker(self._load_preview(url), group="cover_preview")
+
+    async def _load_preview(self, url: str) -> None:
+        app = cast(ExporterApp, self.app)
+        try:
+            image = await app.fetch_preview(url)
+        except Exception:
+            image = None
+        try:
+            if not self.is_mounted:
+                return
+            if image is None:
+                self._show_placeholder("Нет превью")
+                return
+            app.preview_cache[url] = image
+            self._show_image(image)
+        except NoMatches:
+            return
+
+    def _show_image(self, image: Image.Image) -> None:
+        widget = self.query_one("#cover_image", ImageWidget)
+        widget.image = image
+        widget.display = True
+        self.query_one("#cover_placeholder", Static).display = False
+
+    def _show_placeholder(self, text: str) -> None:
+        self.query_one("#cover_image", ImageWidget).display = False
+        placeholder = self.query_one("#cover_placeholder", Static)
+        placeholder.update(text)
+        placeholder.display = True
+
 
 def _language_choices() -> list[tuple[str, str]]:
     """Варианты селектора языка: метка + код из набора 10 языков."""
@@ -525,7 +660,7 @@ class ConfirmScreen(Screen[None]):
             f"перевод: {app.team or DEFAULT_LABEL}"
         )
         with Vertical():
-            yield Static("Подтверждение", id="prompt")
+            yield Static("Шаг 4 · Параметры выгрузки", id="prompt", classes="screen-title")
             yield Static(header, id="summary")
             yield Static("Параметры выгрузки", id="form_title")
             with Horizontal(id="form"):
@@ -561,7 +696,7 @@ class ConfirmScreen(Screen[None]):
                         value=options.include_images,
                         id="include_images",
                     )
-            yield Static("", id="form_error")
+            yield Static("", id="form_error", classes="error")
             with Horizontal(classes="actions"):
                 yield Button("Начать", id="start", variant="primary")
                 yield Button("Отмена", id="cancel")
@@ -632,14 +767,14 @@ class ProgressScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("Сборка книги", id="prompt")
+            yield Static("Шаг 5 · Сборка книги", id="prompt", classes="screen-title")
             yield ProgressBar(total=100, id="chapters")
             yield Static("", id="chapter_info")
             yield ProgressBar(total=100, id="images")
             yield Static("", id="images_info")
             with Collapsible(title="Журнал глав", collapsed=True, id="log_panel"):
                 yield RichLog(id="chapter_log", max_lines=5000, auto_scroll=False)
-            yield Static("", id="notices")
+            yield Static("", id="notices", classes="notice")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -706,7 +841,7 @@ class ReportScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         app = cast(ExporterApp, self.app)
         with Vertical():
-            yield Static("Отчёт", id="prompt")
+            yield Static("Шаг 6 · Отчёт", id="prompt", classes="screen-title")
             yield VerticalScroll(Static(app.report_text, id="report"))
             with Horizontal(classes="actions"):
                 if app.interrupted and app.save_partial is not None:
@@ -761,6 +896,50 @@ def _eta_text(seconds: float) -> str:
         return "0 с"
     minutes, secs = divmod(round(seconds), 60)
     return f"{minutes} мин {secs} с" if minutes else f"{secs} с"
+
+
+def default_terminal_supports_images() -> bool:
+    """Терминал умеет рисовать настоящие изображения (TGP или Sixel).
+
+    Иначе `textual-image` рисует суррогат (half-cell/Unicode), а по требованию
+    «Запасной вариант без поддержки изображений» вместо картинки показывается текст.
+    """
+    from textual_image.widget import AutoRenderable, SixelRenderable, TGPRenderable
+
+    return AutoRenderable is SixelRenderable or AutoRenderable is TGPRenderable
+
+
+def default_fetch_preview(options: Options) -> PreviewFetch:
+    """Боевая загрузка превью обложки: байты по URL → `PIL.Image` (решение 2 design.md).
+
+    Возвращает `None` при пустом URL, недоступном изображении или ошибке сети —
+    интерфейс показывает заглушку, не блокируя выбор обложки.
+    """
+
+    async def fetch(url: str | None) -> Image.Image | None:
+        from ..cli.main import build_config
+        from ..images.pipeline import absolute_url, fetch_image
+        from ..source.client import RanobeLibClient
+
+        if not url:
+            return None
+        absolute = absolute_url({"url": url})
+        if not absolute:
+            return None
+        client = RanobeLibClient(build_config(options))
+        try:
+            raw = await fetch_image(client, absolute)
+        except Exception:
+            return None
+        finally:
+            await client.aclose()
+        try:
+            with Image.open(io.BytesIO(raw)) as opened:
+                return opened.copy()
+        except Exception:
+            return None
+
+    return fetch
 
 
 async def default_load_metadata(link: str, options: Options) -> Metadata:
