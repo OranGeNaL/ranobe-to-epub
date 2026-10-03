@@ -165,6 +165,41 @@ class TestCompression:
         assert len(low.data) < len(high.data)
 
 
+class TestGrayscale:
+    def test_grayscale_output_is_mode_l_and_resized(self) -> None:
+        source = Image.new("RGB", (600, 400), (200, 10, 10))
+        buffer = io.BytesIO()
+        source.save(buffer, format="PNG")
+
+        asset = compress_image(buffer.getvalue(), max_width=480, grayscale=True)
+
+        with Image.open(io.BytesIO(asset.data)) as result:
+            assert result.mode == "L"
+            assert result.width == 480
+
+    def test_grayscale_forces_recompression_of_small_color_jpeg(self) -> None:
+        assert (
+            should_compress(100_000, "JPEG", 800, 600, 0.5, 1280, grayscale=True, image_mode="RGB")
+            is True
+        )
+
+    def test_already_grayscale_jpeg_is_not_recompressed(self) -> None:
+        assert (
+            should_compress(100_000, "JPEG", 800, 600, 0.5, 1280, grayscale=True, image_mode="L")
+            is False
+        )
+
+    def test_filter_and_compress_honours_grayscale(self) -> None:
+        source = Image.new("RGB", (100, 100), (10, 20, 30))
+        buffer = io.BytesIO()
+        source.save(buffer, format="PNG")
+
+        asset = filter_and_compress(buffer.getvalue(), grayscale=True)
+
+        with Image.open(io.BytesIO(asset.data)) as result:
+            assert result.mode == "L"
+
+
 class TestNoCompression:
     def test_zero_limit_keeps_original_bytes(self, real_png: bytes) -> None:
         asset = filter_and_compress(real_png, max_image_mb=0)

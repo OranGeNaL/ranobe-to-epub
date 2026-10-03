@@ -17,6 +17,7 @@ from textual.widgets import (
     OptionList,
     ProgressBar,
     RichLog,
+    Select,
     Static,
 )
 
@@ -25,6 +26,7 @@ from ranobelib_epub.models import Book, Chapter, TranslationBranch
 from ranobelib_epub.pipeline.report import ChapterEvent, Progress, ReportRecorder
 from ranobelib_epub.tui.app import (
     DEFAULT_OPTION,
+    MANUAL_PRESET,
     ConfirmScreen,
     ExporterApp,
     LinkScreen,
@@ -335,7 +337,7 @@ class TestConfirmScreen:
             assert app.screen.query_one("#output", Input).value == "book.epub"
             assert app.screen.query_one("#chapters", Input).value == "1-3"
             assert app.screen.query_one("#include_images", Checkbox).value is False
-            assert len(app.screen.query(".field_label")) == 7
+            assert len(app.screen.query(".field_label")) == 8
 
     async def test_edits_flow_into_build_plan(self) -> None:
         captured: dict = {}
@@ -380,6 +382,61 @@ class TestConfirmScreen:
             await submit_link(pilot, app)
 
             assert len(app.screen.query("#charset")) == 0
+
+    async def test_preset_selection_fills_and_disables_fields(self) -> None:
+        app = ExporterApp(load_metadata=loader(single_team_chapters()))
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            app.screen.query_one("#preset", Select).value = "crosspoint"
+            await pilot.pause()
+
+            assert app.screen.query_one("#max_image_width", Input).value == "480"
+            assert app.screen.query_one("#quality", Input).value == "80"
+            assert app.screen.query_one("#max_image_mb", Input).value == "0.5"
+            assert app.screen.query_one("#max_image_width", Input).disabled is True
+            assert app.screen.query_one("#quality", Input).disabled is True
+            assert app.screen.query_one("#max_image_mb", Input).disabled is True
+
+    async def test_returning_to_manual_unlocks_fields(self) -> None:
+        app = ExporterApp(load_metadata=loader(single_team_chapters()))
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            preset = app.screen.query_one("#preset", Select)
+            preset.value = "medium"
+            await pilot.pause()
+            assert app.screen.query_one("#quality", Input).disabled is True
+
+            preset.value = MANUAL_PRESET
+            await pilot.pause()
+
+            assert app.screen.query_one("#quality", Input).disabled is False
+            assert app.screen.query_one("#max_image_width", Input).disabled is False
+
+    async def test_preset_selection_flows_into_build_plan(self) -> None:
+        captured: dict = {}
+
+        async def build(plan, on_progress, on_notice):
+            captured["plan"] = plan
+            recorder = ReportRecorder(total_chapters=len(plan.chapters))
+            recorder.finished("/tmp/book.epub", 1)
+            return recorder
+
+        app = ExporterApp(load_metadata=loader(single_team_chapters()), build=build)
+
+        async with app.run_test() as pilot:
+            await submit_link(pilot, app)
+            app.screen.query_one("#preset", Select).value = "max-compression"
+            await pilot.pause()
+            app.screen.query_one("#quality", Input).value = "99"
+            await pilot.click("#start")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+        options = captured["plan"].options
+        assert options.preset == "max-compression"
+        assert (options.max_image_width, options.quality, options.max_image_mb) == (640, 60, 0.5)
 
     async def test_default_load_metadata_keeps_all_chapters(self, monkeypatch) -> None:
         class FakeClient:

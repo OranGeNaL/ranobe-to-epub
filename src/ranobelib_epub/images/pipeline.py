@@ -22,6 +22,7 @@ from pathlib import PurePosixPath
 from PIL import Image
 
 from ..models import Attachment, MissingImage
+from .presets import DEFAULT_PRESET, PRESETS
 
 #: Origin сайта: файлы иллюстраций лежат на нём, а не на хосте API.
 SITE_ORIGIN = "https://ranobelib.me"
@@ -35,9 +36,11 @@ IMAGE_HEADERS = {
     ),
 }
 
-DEFAULT_MAX_WIDTH = 1280
-DEFAULT_QUALITY = 80
-DEFAULT_MAX_MB = 0.5
+#: Значения по умолчанию равны пресету `medium` — единый источник истины в presets.py.
+_MEDIUM = PRESETS[DEFAULT_PRESET]
+DEFAULT_MAX_WIDTH = _MEDIUM.max_width
+DEFAULT_QUALITY = _MEDIUM.quality
+DEFAULT_MAX_MB = _MEDIUM.max_mb
 
 
 def attachment_key(entry: dict | str) -> str:
@@ -172,10 +175,13 @@ def compress_image(
     raw: bytes,
     max_width: int = DEFAULT_MAX_WIDTH,
     quality: int = DEFAULT_QUALITY,
+    grayscale: bool = False,
 ) -> ImageAsset:
     """Перекодирует изображение в JPEG заданной ширины и качества (8.2, 8.3).
 
     Уменьшение только вниз: картинка уже меньше лимита остаётся своего размера.
+    При `grayscale=True` результат переводится в оттенки серого — режим `L`
+    корректно сохраняется в JPEG.
     """
     with Image.open(io.BytesIO(raw)) as opened:
         opened.load()
@@ -183,6 +189,9 @@ def compress_image(
         # который закроется на выходе из `with`, и JPEG не сохранится — такое
         # проявлялось только на картинках, которые не пришлось уменьшать.
         image = flatten_to_white(opened).copy()
+
+    if grayscale:
+        image = image.convert("L")
 
     if image.width > max_width:
         height = round(image.height * max_width / image.width)
@@ -216,6 +225,8 @@ def should_compress(
     height: int,
     max_image_mb: float = DEFAULT_MAX_MB,
     max_width: int = DEFAULT_MAX_WIDTH,
+    grayscale: bool = False,
+    image_mode: str | None = None,
 ) -> bool:
     """Следует ли перекодировать изображение с такими параметрами.
 
@@ -223,10 +234,13 @@ def should_compress(
     формат не JPEG (PNG и GIF всегда перекодируются в JPEG) или если его размер
     в байтах превышает порог `max_image_mb`. `max_image_mb == 0` отключает сжатие
     целиком (сценарий «Лимит сжатия отключён»), и тогда исходные байты
-    сохраняются независимо от формата и размеров.
+    сохраняются независимо от формата и размеров. Запрошенные градации серого
+    заставляют перекодировать даже небольшие цветные JPEG.
     """
     if max_image_mb <= 0:
         return False
+    if grayscale and (image_mode or "").upper() not in {"L", "LA"}:
+        return True
     if width > max_width:
         return True
     if (image_format or "").upper() != "JPEG":
@@ -297,6 +311,7 @@ def filter_and_compress(
     max_image_mb: float = DEFAULT_MAX_MB,
     max_width: int = DEFAULT_MAX_WIDTH,
     quality: int = DEFAULT_QUALITY,
+    grayscale: bool = False,
 ) -> ImageAsset:
     """Точка входа: решает по заголовку, сжимать ли, и возвращает готовый актив."""
     with Image.open(io.BytesIO(raw)) as opened:
@@ -307,7 +322,9 @@ def filter_and_compress(
             opened.height,
             max_image_mb,
             max_width,
+            grayscale,
+            opened.mode,
         )
     if not compress:
         return keep_original(raw)
-    return compress_image(raw, max_width=max_width, quality=quality)
+    return compress_image(raw, max_width=max_width, quality=quality, grayscale=grayscale)

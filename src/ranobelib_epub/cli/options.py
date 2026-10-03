@@ -14,6 +14,7 @@ from pathlib import Path
 from ..charset.profiles import DEFAULT_PROFILE, PROFILES
 from ..epub.naming import sanitize as sanitize_name
 from ..images.pipeline import DEFAULT_MAX_MB, DEFAULT_MAX_WIDTH, DEFAULT_QUALITY
+from ..images.presets import DEFAULT_PRESET, PresetError, preset_names, resolve_settings
 from ..models import Book, Chapter
 from ..source.client import DEFAULT_RATE_LIMIT
 from ..source.translations import DEFAULT_TRANSLATION
@@ -79,9 +80,17 @@ def charset_profile(value: str) -> str:
 
 
 def _validate(namespace: argparse.Namespace) -> None:
-    """Проверки значений с человеческими сообщениями."""
-    positive_float(str(namespace.max_image_mb))
-    positive_int(str(namespace.max_image_width))
+    """Проверки значений с человеческими сообщениями.
+
+    Параметры сжатия могут быть `None` (не заданы) — их разрешает
+    `resolve_settings`, а здесь проверяются только явно переданные значения.
+    """
+    if namespace.max_image_mb is not None:
+        positive_float(str(namespace.max_image_mb))
+    if namespace.max_image_width is not None:
+        positive_int(str(namespace.max_image_width))
+    if namespace.quality is not None:
+        jpeg_quality(str(namespace.quality))
     positive_float(str(namespace.rate_limit))
     positive_int(str(namespace.retries))
     charset_profile(namespace.charset)
@@ -131,6 +140,8 @@ class Options:
     max_image_mb: float = DEFAULT_MAX_MB
     max_image_width: int = DEFAULT_MAX_WIDTH
     quality: int = DEFAULT_QUALITY
+    grayscale: bool = False
+    preset: str | None = None
     charset: str = DEFAULT_PROFILE
     team: str | None = DEFAULT_TRANSLATION
     chapters: str | None = None
@@ -160,6 +171,7 @@ class Options:
         compression = "выключен" if self.max_image_mb == 0 else f"{self.max_image_mb} МБ"
         return [
             f"изображения: {images}",
+            f"пресет: {self.preset or 'вручную'}",
             f"сжатие: {compression}, ширина: {self.max_image_width}, качество: {self.quality}",
             f"набор символов: {self.charset}",
             f"перевод: {self.team or 'актуальная ветка'}",
@@ -179,29 +191,54 @@ def build_options(
     quality: str,
     output: str,
     chapters: str,
+    preset: str | None = None,
 ) -> Options:
     """Собирает `Options` из значений формы TUI, проверяя их общими правилами (задача 1.2).
 
     Неотредактированные поля (`slug_url`, `charset`, `team`, `no_tui`) переносятся
     из `base` без изменений. Пустой путь вывода означает имя по умолчанию, пустая
-    выборка — все главы.
+    выборка — все главы. Если выбран `preset`, ручные поля сжатия игнорируются и
+    берутся значения пресета; иначе разбираются ручные значения (задача 4.2).
     """
     output_path = Path(output.strip()) if output.strip() else None
     chapters_value = chapters.strip() or None
+    try:
+        resolved = _resolve_for_form(preset, max_image_mb, max_image_width, quality)
+    except PresetError as error:
+        raise ArgumentError(str(error)) from error
     options = replace(
         base,
         rate_limit=positive_float(rate_limit),
         retries=positive_int(retries),
         include_images=include_images,
-        max_image_mb=positive_float(max_image_mb),
-        max_image_width=positive_int(max_image_width),
-        quality=jpeg_quality(quality),
+        max_image_mb=resolved.max_mb,
+        max_image_width=resolved.max_width,
+        quality=resolved.quality,
+        grayscale=resolved.grayscale,
+        preset=resolved.preset,
         output=output_path,
         chapters=chapters_value,
     )
     if options.chapters is not None:
         parse_chapter_selection(options.chapters)
     return options
+
+
+def _resolve_for_form(
+    preset: str | None,
+    max_image_mb: str,
+    max_image_width: str,
+    quality: str,
+):
+    """Разрешает настройки сжатия из формы TUI: пресет важнее ручных полей."""
+    if preset is not None:
+        return resolve_settings(preset)
+    return resolve_settings(
+        None,
+        max_width=positive_int(max_image_width),
+        quality=jpeg_quality(quality),
+        max_mb=positive_float(max_image_mb),
+    )
 
 
 def apply_chapter_selection(options: Options, chapters: list[Chapter]) -> list[Chapter]:
@@ -218,14 +255,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, help="путь к итоговому файлу")
     parser.add_argument("--no-images", action="store_true", help="не скачивать иллюстрации")
     parser.add_argument(
+        "--preset",
+        default=None,
+        help=(
+            f"пресет сжатия: {', '.join(preset_names())} "
+            f"(по умолчанию {DEFAULT_PRESET}); несовместим с ручными параметрами сжатия"
+        ),
+    )
+    parser.add_argument(
         "--max-image-mb",
-        default=DEFAULT_MAX_MB,
+        default=None,
         help=f"порог сжатия в МБ, 0 отключает сжатие (по умолчанию {DEFAULT_MAX_MB})",
     )
     parser.add_argument(
         "--max-image-width",
-        default=DEFAULT_MAX_WIDTH,
+        default=None,
         help=f"максимальная ширина изображения (по умолчанию {DEFAULT_MAX_WIDTH})",
+    )
+    parser.add_argument(
+        "--quality",
+        default=None,
+        help=f"качество JPEG, 1-100 (по умолчанию {DEFAULT_QUALITY})",
     )
     parser.add_argument(
         "--charset",
@@ -253,24 +303,44 @@ def parse_args(argv: list[str] | None = None) -> Options:
     # проверки значений выполняются здесь: сообщение остаётся информативным.
     _validate(namespace)
 
-    namespace.max_image_mb = float(namespace.max_image_mb)
-    namespace.max_image_width = int(namespace.max_image_width)
-    namespace.rate_limit = float(namespace.rate_limit)
-    namespace.retries = int(namespace.retries)
+    max_image_mb = (
+        positive_float(str(namespace.max_image_mb))
+        if namespace.max_image_mb is not None
+        else None
+    )
+    max_image_width = (
+        positive_int(str(namespace.max_image_width))
+        if namespace.max_image_width is not None
+        else None
+    )
+    quality = jpeg_quality(str(namespace.quality)) if namespace.quality is not None else None
+    rate_limit = positive_float(str(namespace.rate_limit))
+    retries = positive_int(str(namespace.retries))
     if namespace.chapters is not None:
         parse_chapter_selection(namespace.chapters)
+    try:
+        resolved = resolve_settings(
+            namespace.preset,
+            max_width=max_image_width,
+            quality=quality,
+            max_mb=max_image_mb,
+        )
+    except PresetError as error:
+        raise ArgumentError(str(error)) from error
     return Options(
         slug_url=namespace.slug_url,
         output=namespace.output,
         include_images=not namespace.no_images,
-        max_image_mb=namespace.max_image_mb,
-        max_image_width=namespace.max_image_width,
-        quality=DEFAULT_QUALITY,
+        max_image_mb=resolved.max_mb,
+        max_image_width=resolved.max_width,
+        quality=resolved.quality,
+        grayscale=resolved.grayscale,
+        preset=resolved.preset,
         charset=namespace.charset,
         team=namespace.team,
         chapters=namespace.chapters,
-        rate_limit=namespace.rate_limit,
-        retries=namespace.retries,
+        rate_limit=rate_limit,
+        retries=retries,
         no_tui=namespace.no_tui,
     )
 

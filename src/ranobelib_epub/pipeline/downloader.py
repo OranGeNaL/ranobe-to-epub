@@ -80,6 +80,7 @@ class ChapterDownloader:
         max_image_mb: float = DEFAULT_MAX_MB,
         max_image_width: int = DEFAULT_MAX_WIDTH,
         quality: int = DEFAULT_QUALITY,
+        grayscale: bool = False,
         include_images: bool = True,
     ) -> None:
         self.source = source
@@ -91,6 +92,7 @@ class ChapterDownloader:
         self.max_image_mb = max_image_mb
         self.max_image_width = max_image_width
         self.quality = quality
+        self.grayscale = grayscale
         self.include_images = include_images
         self._image_index = 0
         #: SHA-1 исходных байтов → уже встроенный актив. Дедупликация по
@@ -194,7 +196,7 @@ class ChapterDownloader:
                     self.progress.images_done += 1
                     continue
                 asset = await compress_in_thread(
-                    raw, self.max_image_mb, self.max_image_width, self.quality
+                    raw, self.max_image_mb, self.max_image_width, self.quality, self.grayscale
                 )
             except Exception as error:
                 self.recorder.image_missing(url, describe_failure(error), label, key)
@@ -230,7 +232,7 @@ class ChapterDownloader:
                     self.on_cover(cached.filename)
                 return cached
             asset = await compress_in_thread(
-                raw, self.max_image_mb, self.max_image_width, self.quality
+                raw, self.max_image_mb, self.max_image_width, self.quality, self.grayscale
             )
         except Exception as error:
             self.recorder.image_missing(url, describe_failure(error), "обложка", "cover")
@@ -335,11 +337,14 @@ async def compress_in_thread(
     max_image_mb: float,
     max_width: int,
     quality: int = 80,
+    grayscale: bool = False,
 ) -> ImageAsset:
     """Сжатие Pillow вне event loop (12.2)."""
     from ..images.pipeline import filter_and_compress
 
-    return await asyncio.to_thread(filter_and_compress, raw, max_image_mb, max_width, quality)
+    return await asyncio.to_thread(
+        filter_and_compress, raw, max_image_mb, max_width, quality, grayscale
+    )
 
 
 class StreamingWriter:

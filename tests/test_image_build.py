@@ -256,6 +256,21 @@ class TestImageDownload:
         assert seen[-1].images_total == 1
         assert seen[-1].images_done == 1
 
+    def test_grayscale_downloader_produces_l_mode_assets(self) -> None:
+        url = "https://ranobelib.me/uploads/ranobe/1/a.png"
+        client = FakeClient({url: png_bytes()})
+        source = FakeSource(
+            {1: make_content(("a",), (Attachment(name="a", url="/uploads/ranobe/1/a.png"),))},
+            client,
+        )
+        recorder = ReportRecorder(total_chapters=1)
+        downloader = ChapterDownloader(source, recorder, max_image_mb=1e-9, grayscale=True)
+
+        results = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
+
+        with Image.open(io.BytesIO(results[0].assets[0].data)) as image:
+            assert image.mode == "L"
+
 
 class TestCover:
     def test_cover_downloaded_and_named(self) -> None:

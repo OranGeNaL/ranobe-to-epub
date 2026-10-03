@@ -27,6 +27,7 @@ from textual.widgets import (
     OptionList,
     ProgressBar,
     RichLog,
+    Select,
     Static,
 )
 from textual.widgets.option_list import Option
@@ -37,6 +38,7 @@ from ..cli.options import (
     apply_chapter_selection,
     build_options,
 )
+from ..images.presets import PRESETS, preset_names
 from ..models import Book, Chapter
 from ..pipeline.downloader import coverage_note
 from ..pipeline.report import ChapterEvent, Progress, ReportRecorder
@@ -45,6 +47,16 @@ from ..source.url import InvalidBookUrlError, parse_book_url
 
 DEFAULT_OPTION = "__default__"
 DEFAULT_LABEL = "Актуальная ветка (по умолчанию)"
+
+MANUAL_PRESET = "__manual__"
+MANUAL_PRESET_LABEL = "Вручную"
+
+
+def _preset_choices() -> list[tuple[str, str]]:
+    """Варианты селектора пресетов: «Вручную» и имена из presets.py."""
+    return [(MANUAL_PRESET_LABEL, MANUAL_PRESET)] + [
+        (name, name) for name in preset_names()
+    ]
 
 
 @dataclass(slots=True)
@@ -85,6 +97,9 @@ class ExporterApp(App[None]):
     .actions { height: auto; padding-top: 1; }
     .actions Button { margin-right: 2; }
     #form { height: auto; }
+    .preset_row { height: auto; }
+    .preset_row .field_label { padding-top: 0; width: auto; }
+    .preset_row Select { width: 1fr; }
     .column { width: 1fr; height: auto; padding-right: 2; }
     .column Input { width: 1fr; }
     .field_label { padding-top: 1; }
@@ -283,6 +298,15 @@ class ConfirmScreen(Screen[None]):
             yield Static("Параметры выгрузки", id="form_title")
             with Horizontal(id="form"):
                 with Vertical(classes="column"):
+                    with Horizontal(classes="preset_row"):
+                        yield Static("Пресет сжатия", classes="field_label")
+                        yield Select(
+                            _preset_choices(),
+                            value=options.preset or MANUAL_PRESET,
+                            allow_blank=False,
+                            compact=True,
+                            id="preset",
+                        )
                     yield Static("Лимит запросов в секунду", classes="field_label")
                     yield Input(value=str(options.rate_limit), id="rate_limit", compact=True)
                     yield Static("Число повторов", classes="field_label")
@@ -311,8 +335,34 @@ class ConfirmScreen(Screen[None]):
                 yield Button("Отмена", id="cancel")
         yield Footer()
 
+    def on_mount(self) -> None:
+        app = cast(ExporterApp, self.app)
+        self._apply_preset(app.options.preset or MANUAL_PRESET)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "preset":
+            self._apply_preset(str(event.value))
+
+    def _apply_preset(self, value: str) -> None:
+        """Заполняет и блокирует ручные поля для пресета либо разблокирует их."""
+        fields = ("#max_image_mb", "#max_image_width", "#quality")
+        if value == MANUAL_PRESET:
+            for selector in fields:
+                self.query_one(selector, Input).disabled = False
+            return
+        preset = PRESETS.get(value)
+        if preset is None:
+            return
+        self.query_one("#max_image_mb", Input).value = str(preset.max_mb)
+        self.query_one("#max_image_width", Input).value = str(preset.max_width)
+        self.query_one("#quality", Input).value = str(preset.quality)
+        for selector in fields:
+            self.query_one(selector, Input).disabled = True
+
     def _form_options(self) -> Options:
         app = cast(ExporterApp, self.app)
+        selection = self.query_one("#preset", Select).value
+        preset = None if selection == MANUAL_PRESET else str(selection)
         return build_options(
             app.options,
             rate_limit=self.query_one("#rate_limit", Input).value,
@@ -323,6 +373,7 @@ class ConfirmScreen(Screen[None]):
             quality=self.query_one("#quality", Input).value,
             output=self.query_one("#output", Input).value,
             chapters=self.query_one("#chapters", Input).value,
+            preset=preset,
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

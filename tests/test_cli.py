@@ -532,3 +532,147 @@ class TestConsoleScript:
 
         assert completed.returncode == 0
         assert "--charset" in completed.stdout
+
+
+class TestCompressionPresets:
+    def test_defaults_equal_medium_preset(self) -> None:
+        options = parse_args([URL])
+
+        assert options.preset is None
+        assert (options.max_image_width, options.quality, options.max_image_mb) == (1280, 80, 0.5)
+        assert options.grayscale is False
+
+    def test_preset_sets_effective_values(self) -> None:
+        options = parse_args([URL, "--preset", "crosspoint"])
+
+        assert options.preset == "crosspoint"
+        assert options.max_image_width == 480
+        assert options.quality == 80
+        assert options.grayscale is True
+
+    def test_manual_width_stays_manual(self) -> None:
+        options = parse_args([URL, "--max-image-width", "800"])
+
+        assert options.preset is None
+        assert options.max_image_width == 800
+
+    def test_manual_quality_is_parsed(self) -> None:
+        options = parse_args([URL, "--quality", "60"])
+
+        assert options.preset is None
+        assert options.quality == 60
+
+    def test_preset_conflicts_with_manual_parameter(self) -> None:
+        with pytest.raises(ArgumentError, match="нельзя сочетать"):
+            parse_args([URL, "--preset", "medium", "--quality", "60"])
+
+    def test_unknown_preset_is_rejected(self) -> None:
+        with pytest.raises(ArgumentError, match="неизвестный пресет"):
+            parse_args([URL, "--preset", "turbo"])
+
+    def test_summary_shows_preset_name(self) -> None:
+        lines = "\n".join(parse_args([URL, "--preset", "max-compression"]).summary_lines())
+
+        assert "пресет: max-compression" in lines
+
+    def test_summary_shows_manual_mode(self) -> None:
+        lines = "\n".join(parse_args([URL]).summary_lines())
+
+        assert "пресет: вручную" in lines
+
+    def test_crosspoint_preset_reaches_downloader(self, monkeypatch, tmp_path: Path) -> None:
+        captured: dict = {}
+
+        class StubDownloader:
+            def __init__(self, *args, **kwargs) -> None:
+                captured.update(kwargs)
+
+            async def fetch_all(self, tasks, book_slug):
+                return []
+
+            async def fetch_cover(self, book):
+                return None
+
+        main_module = sys.modules["ranobelib_epub.cli.main"]
+
+        monkeypatch.setattr(main_module, "ChapterDownloader", StubDownloader)
+
+        options = parse_args(
+            [
+                URL,
+                "--no-tui",
+                "--preset",
+                "crosspoint",
+                "--chapters",
+                "1",
+                "--output",
+                str(tmp_path / "b.epub"),
+            ]
+        )
+
+        asyncio.run(run_build(options, Printer(stream=io.StringIO()), client=FixtureClient()))
+
+        assert captured["grayscale"] is True
+        assert captured["max_image_width"] == 480
+
+    def test_crosspoint_preset_produces_grayscale_epub(self, monkeypatch, tmp_path: Path) -> None:
+        import zipfile
+
+        from PIL import Image as PILImage
+
+        from ranobelib_epub.models import Attachment, ChapterContent
+
+        png = _png_bytes()
+
+        class StubSource:
+            def __init__(self, client) -> None:
+                self.client = client
+
+            async def fetch_book(self, slug):
+                return Book(slug_url=URL, rus_name="Книга", name="Книга")
+
+            async def fetch_chapters(self, slug):
+                return [
+                    Chapter(id=1, volume=1, number="1", name="Глава", label="1.1", branch_id=7)
+                ]
+
+            async def fetch_chapter_content(self, slug, chapter, branch_id):
+                return ChapterContent(
+                    doc={
+                        "type": "doc",
+                        "content": [
+                            {"type": "image", "attrs": {"images": [{"image": "a"}]}},
+                            {"type": "paragraph", "content": [{"type": "text", "text": "Текст"}]},
+                        ],
+                    },
+                    attachments=(Attachment(name="a", extension="png", url="/uploads/a.png"),),
+                    branch_id=7,
+                )
+
+        class ByteClient(FixtureClient):
+            async def get_bytes(self, url: str, headers: dict | None = None) -> bytes:
+                return png
+
+        main_module = sys.modules["ranobelib_epub.cli.main"]
+
+        monkeypatch.setattr(main_module, "RanobeLibSource", StubSource)
+        monkeypatch.setattr(main_module, "apply_selection", lambda chapters, team: chapters)
+
+        target = tmp_path / "book.epub"
+        options = parse_args([URL, "--no-tui", "--preset", "crosspoint", "--output", str(target)])
+        asyncio.run(run_build(options, Printer(stream=io.StringIO()), client=ByteClient()))
+
+        with zipfile.ZipFile(target) as archive:
+            image_name = next(n for n in archive.namelist() if n.startswith("EPUB/Images/"))
+            data = archive.read(image_name)
+
+        with PILImage.open(io.BytesIO(data)) as image:
+            assert image.mode == "L"
+
+
+def _png_bytes() -> bytes:
+    from PIL import Image as PILImage
+
+    buffer = io.BytesIO()
+    PILImage.new("RGB", (60, 40), (200, 10, 10)).save(buffer, format="PNG")
+    return buffer.getvalue()

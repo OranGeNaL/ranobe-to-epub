@@ -149,6 +149,7 @@ async def run_build(
             max_image_mb=options.max_image_mb,
             max_image_width=options.max_image_width,
             quality=options.quality,
+            grayscale=options.grayscale,
             include_images=options.include_images,
         )
         tasks = [
