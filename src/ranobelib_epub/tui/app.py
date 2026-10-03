@@ -297,7 +297,7 @@ class ConfirmScreen(Screen[None]):
                     yield Static("Качество JPEG (1–100)", classes="field_label")
                     yield Input(value=str(options.quality), id="quality", compact=True)
                     yield Static("Путь к файлу (пусто — имя по умолчанию)", classes="field_label")
-                    yield Input(value=options.output or "", id="output", compact=True)
+                    yield Input(value=str(options.output or ""), id="output", compact=True)
                     yield Static("Выборка глав (пусто — все)", classes="field_label")
                     yield Input(value=options.chapters or "", id="chapters", compact=True)
                     yield Checkbox(

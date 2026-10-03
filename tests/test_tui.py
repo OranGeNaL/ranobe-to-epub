@@ -318,7 +318,7 @@ class TestConfirmScreen:
                 max_image_mb=2.0,
                 max_image_width=900,
                 quality=70,
-                output="book.epub",
+                output=Path("book.epub"),
                 chapters="1-3",
             ),
         )
