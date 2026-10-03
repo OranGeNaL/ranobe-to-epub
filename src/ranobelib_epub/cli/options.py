@@ -1,0 +1,235 @@
+"""Разбор аргументов и параметры запуска (задачи 13.1, 13.2, 13.5).
+
+Значения по умолчанию зафиксированы требованием «Параметры по умолчанию соответствуют
+заявленным значениям»: изображения включены, сжатие включено, ширина 1280, качество 80,
+троттлинг и повторы активны, профиль символов — `builtin`.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+from pathlib import Path
+
+from ..charset.profiles import DEFAULT_PROFILE, PROFILES
+from ..epub.naming import sanitize as sanitize_name
+from ..images.pipeline import DEFAULT_MAX_MB, DEFAULT_MAX_WIDTH, DEFAULT_QUALITY
+from ..models import Book
+from ..source.client import DEFAULT_RATE_LIMIT
+from ..source.translations import DEFAULT_TRANSLATION
+
+PROGRAM = "ranobelib-epub"
+DESCRIPTION = "Скачивает книгу с RanobeLib и собирает из неё EPUB 3"
+
+DEFAULT_RETRIES = 3
+DEFAULT_OUTPUT_SUFFIX = ".epub"
+
+
+class ArgumentError(ValueError):
+    """Некорректное значение параметра: сборка не начинается (13.1)."""
+
+
+class _Parser(argparse.ArgumentParser):
+    """Разборщик, который сообщает об ошибках нашим типом, а не `SystemExit`.
+
+    Иначе неверное значение даёт служебный текст argparse на английском и
+    непроносимое отличие между программным вызовом и запуском из терминала.
+    """
+
+    def error(self, message: str) -> None:
+        raise ArgumentError(message)
+
+
+def _positive_float(value: str) -> float:
+    try:
+        number = float(value)
+    except ValueError as error:
+        raise ArgumentError(f"ожидалось число, получено «{value}»") from error
+    if number < 0:
+        raise ArgumentError(f"значение не может быть отрицательным: {value}")
+    return number
+
+
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as error:
+        raise ArgumentError(f"ожидалось целое число, получено «{value}»") from error
+    if number < 0:
+        raise ArgumentError(f"значение не может быть отрицательным: {value}")
+    return number
+
+
+def _charset(value: str) -> str:
+    if value not in PROFILES:
+        options = ", ".join(PROFILES)
+        raise ArgumentError(f"неизвестный профиль «{value}». Доступны: {options}")
+    return value
+
+
+def _validate(namespace: argparse.Namespace) -> None:
+    """Проверки значений с человеческими сообщениями."""
+    _positive_float(str(namespace.max_image_mb))
+    _positive_int(str(namespace.max_image_width))
+    _positive_float(str(namespace.rate_limit))
+    _positive_int(str(namespace.retries))
+    _charset(namespace.charset)
+
+
+def parse_chapter_selection(value: str) -> tuple[frozenset[str], frozenset[int], frozenset[int]]:
+    """Разбор `--chapters`: диапазоны `1-50`, списки `1,3,5`, номера томов `v2`.
+
+    Поддерживаются смешанные списки: `1-3,7,10-12`. Возвращается тройка
+    (метки, тома, порядковые номера) — её же понимает `ChapterSelector`.
+    """
+    labels: set[str] = set()
+    volumes: set[int] = set()
+    indexes: set[int] = set()
+
+    for chunk in (part.strip() for part in value.split(",")):
+        if not chunk:
+            continue
+        if chunk.startswith("v") and chunk[1:].isdigit():
+            volumes.add(int(chunk[1:]))
+            continue
+        if "-" in chunk:
+            start_text, _, end_text = chunk.partition("-")
+            if not start_text.isdigit() or not end_text.isdigit():
+                raise ArgumentError(f"некорректный диапазон глав: «{chunk}»")
+            start, end = int(start_text), int(end_text)
+            if end < start:
+                raise ArgumentError(f"конец диапазона меньше начала: «{chunk}»")
+            indexes.update(range(start, end + 1))
+            continue
+        if not chunk.isdigit():
+            raise ArgumentError(f"некорректный номер главы: «{chunk}»")
+        indexes.add(int(chunk))
+
+    if not (labels or volumes or indexes):
+        raise ArgumentError("пустой список глав")
+    return frozenset(labels), frozenset(volumes), frozenset(indexes)
+
+
+@dataclass(frozen=True, slots=True)
+class Options:
+    """Разобранные параметры запуска."""
+
+    slug_url: str | None = None
+    output: Path | None = None
+    include_images: bool = True
+    max_image_mb: float = DEFAULT_MAX_MB
+    max_image_width: int = DEFAULT_MAX_WIDTH
+    quality: int = DEFAULT_QUALITY
+    charset: str = DEFAULT_PROFILE
+    team: str | None = DEFAULT_TRANSLATION
+    chapters: str | None = None
+    rate_limit: float = DEFAULT_RATE_LIMIT
+    retries: int = DEFAULT_RETRIES
+    no_tui: bool = False
+
+    @property
+    def selection(self):
+        """Выборка глав из `--chapters`; None, если параметр не задан."""
+        if self.chapters is None:
+            return None
+        labels, volumes, indexes = parse_chapter_selection(self.chapters)
+        from ..pipeline.downloader import ChapterSelector
+
+        return ChapterSelector(labels=labels, volumes=volumes, indexes=indexes)
+
+    def output_path_for(self, book: Book) -> Path:
+        """Итоговый путь: `--output` или имя из названия книги (13.5)."""
+        if self.output is not None:
+            return self.output
+        return Path(default_filename(book))
+
+    def summary_lines(self) -> list[str]:
+        """Параметры для показа перед сборкой."""
+        images = "включены" if self.include_images else "выключены"
+        compression = "выключен" if self.max_image_mb == 0 else f"{self.max_image_mb} МБ"
+        return [
+            f"изображения: {images}",
+            f"сжатие: {compression}, ширина: {self.max_image_width}, качество: {self.quality}",
+            f"набор символов: {self.charset}",
+            f"перевод: {self.team or 'актуальная ветка'}",
+            f"главы: {self.chapters or 'все'}",
+            f"троттлинг: {self.rate_limit}/с, повторы: {self.retries}",
+        ]
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = _Parser(prog=PROGRAM, description=DESCRIPTION)
+    parser.add_argument("slug_url", nargs="?", help="ссылка на книгу или её slug_url")
+    parser.add_argument("--output", type=Path, help="путь к итоговому файлу")
+    parser.add_argument("--no-images", action="store_true", help="не скачивать иллюстрации")
+    parser.add_argument(
+        "--max-image-mb",
+        default=DEFAULT_MAX_MB,
+        help=f"порог сжатия в МБ, 0 отключает сжатие (по умолчанию {DEFAULT_MAX_MB})",
+    )
+    parser.add_argument(
+        "--max-image-width",
+        default=DEFAULT_MAX_WIDTH,
+        help=f"максимальная ширина изображения (по умолчанию {DEFAULT_MAX_WIDTH})",
+    )
+    parser.add_argument(
+        "--charset",
+        default=DEFAULT_PROFILE,
+        help=f"профиль набора символов: {', '.join(PROFILES)} (по умолчанию {DEFAULT_PROFILE})",
+    )
+    parser.add_argument("--team", help="имя команды-переводчика")
+    parser.add_argument("--chapters", help="выборка глав: 1-50, 1,3,5, v2")
+    parser.add_argument(
+        "--rate-limit",
+        default=DEFAULT_RATE_LIMIT,
+        help=f"запросов в секунду (по умолчанию {DEFAULT_RATE_LIMIT})",
+    )
+    parser.add_argument("--retries", default=DEFAULT_RETRIES, help="число попыток")
+    parser.add_argument("--no-tui", action="store_true", help="без интерактивного интерфейса")
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> Options:
+    """Разбирает аргументы; некорректное значение даёт `ArgumentError` (13.1)."""
+    parser = build_parser()
+    namespace = parser.parse_args(argv)
+
+    # argparse проглатывает исключение из `type=` и заменяет своим текстом, поэтому
+    # проверки значений выполняются здесь: сообщение остаётся информативным.
+    _validate(namespace)
+
+    namespace.max_image_mb = float(namespace.max_image_mb)
+    namespace.max_image_width = int(namespace.max_image_width)
+    namespace.rate_limit = float(namespace.rate_limit)
+    namespace.retries = int(namespace.retries)
+    if namespace.chapters is not None:
+        parse_chapter_selection(namespace.chapters)
+    return Options(
+        slug_url=namespace.slug_url,
+        output=namespace.output,
+        include_images=not namespace.no_images,
+        max_image_mb=namespace.max_image_mb,
+        max_image_width=namespace.max_image_width,
+        quality=DEFAULT_QUALITY,
+        charset=namespace.charset,
+        team=namespace.team,
+        chapters=namespace.chapters,
+        rate_limit=namespace.rate_limit,
+        retries=namespace.retries,
+        no_tui=namespace.no_tui,
+    )
+
+
+def default_filename(book: Book) -> str:
+    """Имя файла из русского названия, иначе из оригинального (13.5)."""
+    stem = sanitize_name(book.rus_name or book.name or "book")
+    return f"{stem}{DEFAULT_OUTPUT_SUFFIX}"
+
+
+def exit_code_for(error: Exception | None) -> int:
+    """Код возврата: 0 при успехе, 2 при ошибке значения, 1 при сбое сборки (13.4)."""
+    if error is None:
+        return 0
+    if isinstance(error, ArgumentError):
+        return 2
+    return 1

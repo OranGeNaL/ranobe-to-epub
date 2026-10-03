@@ -1,0 +1,51 @@
+[project]
+name = "ranobelib-epub"
+version = "0.1.0"
+description = "Выгрузка книг с ranobelib.me в EPUB 3 с фильтрацией символов под CrossPoint"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+dependencies = [
+    "textual>=8.2.8",
+    "httpx>=0.28.1",
+    "pillow>=12.3.0",
+]
+
+[project.scripts]
+ranobelib-epub = "ranobelib_epub.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.25.3",
+    "ruff>=0.9.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ranobelib_epub"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "contract: тесты с обращением к живому API; по умолчанию пропускаются",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# Проект документирован по-русски: RUF001-003 путают кириллицу с латиницей
+# в docstring'ах и дают ложные срабатывания.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/fixtures/*" = ["ALL"]
