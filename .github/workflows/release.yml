@@ -1,0 +1,138 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            os: ubuntu-22.04
+          - target: macos-arm64
+            os: macos-15
+          - target: windows-amd64
+            os: windows-2022
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Read version from pyproject
+        id: version
+        run: |
+          VERSION=$(uv run python - <<'PY'
+          from tomllib import load
+          print(load(open("pyproject.toml", "rb"))["project"]["version"])
+          PY
+          )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build standalone binary
+        run: |
+          uv run python -m nuitka \
+            --mode=onefile \
+            --python-flag=-m \
+            --assume-yes-for-downloads \
+            --update-check=never \
+            --output-dir=dist \
+            --output-filename=ranobelib-epub-${{ matrix.target }} \
+            --file-version="${{ steps.version.outputs.version }}" \
+            --product-version="${{ steps.version.outputs.version }}" \
+            --report=compilation-report.xml \
+            src/ranobelib_epub > build.log 2>&1
+          echo "=== build.log tail ==="
+          tail -20 build.log
+
+      - name: Verify base OS version
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            floor=$(grep -oE 'runs on macOS [0-9.]+' build.log | tail -1)
+            [[ -n "$floor" ]] || { echo "no macOS floor line in build.log"; exit 1; }
+            major=$(echo "$floor" | grep -oE '[0-9]+' | head -1)
+            echo "macOS floor: $floor"
+            [[ "$major" -le 15 ]] || { echo "base macOS too high: $floor"; exit 1; }
+          elif [[ "$RUNNER_OS" == "Linux" ]]; then
+            glibc=$(ldd --version | head -1)
+            echo "host glibc: $glibc"
+            echo "$glibc" | grep -q "glibc 2.35" || { echo "unexpected glibc: $glibc"; exit 1; }
+          fi
+
+      - name: Smoke test the binary
+        run: |
+          bin=$(find dist -maxdepth 1 -type f -name 'ranobelib-epub-*' | head -n 1)
+          [[ -n "$bin" ]] || { echo "no binary produced in dist/"; exit 1; }
+          "$bin" --help > /dev/null 2>&1 && echo "smoke OK: $bin" || { echo "smoke FAILED: $bin"; exit 1; }
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ranobelib-epub-${{ matrix.target }}
+          path: dist/ranobelib-epub-*
+          if-no-files-found: error
+
+      - name: Upload build log and report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-notes-${{ matrix.target }}
+          path: |
+            build.log
+            compilation-report.xml
+          if-no-files-found: ignore
+
+  publish:
+    name: publish
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate checksums
+        run: |
+          find artifacts -maxdepth 2 -type f -name 'ranobelib-epub-*' -exec sha256sum {} + | \
+            sed -E 's#artifacts/[^/]+/##' \
+            | sort -k2 > checksums.txt
+          echo "=== checksums.txt ==="
+          cat checksums.txt
+          [[ -s checksums.txt ]] || { echo "no files to checksum"; exit 1; }
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=$(find artifacts -maxdepth 2 -type f -name 'ranobelib-epub-*')
+          gh release create "$GITHUB_REF_NAME" \
+            $assets checksums.txt \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

@@ -35,6 +35,46 @@ uv sync
 uv run ranobelib-epub "<ссылка>"
 ```
 
+## Готовые бинарные сборки
+
+Готовые исполняемые файлы публикуются в [GitHub Releases](https://github.com/OranGeNaL/ranobe-to-epub/releases).
+Такой файл не требует установки Python, uv и каких-либо пакетов — достаточно скачать
+файл под вашу платформу и запустить.
+
+| Платформа | Файл | Требования |
+| --- | --- | --- |
+| Linux x86_64 | `ranobelib-epub-linux-x86_64` | glibc 2.35+ (Ubuntu 22.04+, Debian 12+, RHEL 9+ и совместимые) |
+| macOS arm64 | `ranobelib-epub-macos-arm64` | macOS 15+ (Apple Silicon, Mac с 2020 года и новее) |
+| Windows x86_64 | `ranobelib-epub-windows-amd64.exe` | Windows 10/11 x64 |
+
+Сборок под macOS Intel в настоящее время нет из-за отсутствия доступных
+инструментов компиляции под эту архитектуру; на таких машинах используйте
+установку через uv выше.
+
+Запуск совпадает с обычным:
+
+```bash
+# Linux/macOS
+./ranobelib-epub-linux-x86_64 "<ссылка>"
+
+# Windows
+ranobelib-epub-windows-amd64.exe "<ссылка>"
+```
+
+### Проверка скачанного файла
+
+Вместе с бинарными файлами в Release лежит `checksums.txt` с контрольными суммами
+SHA-256. Проверить целостность скачанного файла можно так:
+
+```bash
+sha256sum -c checksums.txt   # Linux/macOS
+certutil -hashfile ranobelib-epub-windows-amd64.exe SHA256  # Windows
+```
+
+На Windows одно из предупреждений — «Неизвестный издатель» от SmartScreen: бинарные
+файлы не подписаны сертификатом. Это ожидаемо для этой сборки; перед запуском
+файла сверьте его контрольную сумму, следуя инструкции выше.
+
 ## Использование
 
 В терминале по умолчанию запускается TUI. Если ввод или вывод перенаправлены
@@ -126,3 +166,17 @@ EPUBCHECK_JAR=/path/to/epubcheck.jar uv run pytest
 ```bash
 RANOBELIB_CONTRACT=1 uv run pytest -m contract
 ```
+
+Локальная сборка самодостаточного бинаря (тем же способом, что и в CI):
+
+```bash
+uv run python -m nuitka \
+  --mode=onefile --python-flag=-m \
+  --assume-yes-for-downloads --update-check=never \
+  --output-dir=dist \
+  --output-filename=ranobelib-epub-macos-arm64 \
+  src/ranobelib_epub
+```
+
+Сборка занимает несколько минут (компиляция C-кода). Артефакты появляются в
+`dist/`; после проверки их можно удалить, в репозиторий они не входят.
