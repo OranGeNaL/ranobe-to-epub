@@ -446,6 +446,19 @@ class TestProgress:
         assert "глав/с" in text
         assert "осталось" in text
 
+    def test_render_download_phase_shows_fetched(self) -> None:
+        progress = Progress(fetched=30, total=735, elapsed=12.0)
+
+        assert progress.downloading is True
+        text = progress.render()
+
+        assert "скачано 30/735" in text
+        assert "глав/с" not in text
+
+    def test_downloading_is_false_after_first_chapter(self) -> None:
+        assert Progress(done=1, fetched=5, total=5).downloading is False
+        assert Progress(done=0, fetched=5, total=5).downloading is False
+
     def test_eta_is_zero_without_timing(self) -> None:
         assert Progress(done=5, total=10).eta == 0.0
 
@@ -466,8 +479,10 @@ class TestProgress:
         chapters = [chapter(index) for index in range(1, 6)]
         asyncio.run(downloader.fetch_all([ChapterTask(c) for c in chapters], book_slug="slug"))
 
-        assert [p.done for p in seen] == [1, 2, 3, 4, 5]
+        built = [p.done for p in seen if p.last_event is not None]
+        assert built == [1, 2, 3, 4, 5]
         assert seen[-1].total == 5
+        assert seen[0].last_event is None, "прогресс виден до завершения первой главы"
 
 
 class TestChapterEventJournal:
@@ -558,10 +573,25 @@ class TestOrderedJournal:
         )
 
         assert [event.position for event in events] == [1, 2, 3]
-        assert [progress.done for progress in updates] == [1, 1, 2]
+        chapter_done = [p.done for p in updates if p.last_event is not None]
+        assert chapter_done == [1, 1, 2]
         assert len(results) == 2
         assert [event.label for event in events if not event.built] == ["1.2"]
         assert [item.label for item in recorder.report.unavailable] == ["1.2"]
+
+    def test_download_phase_reports_before_processing(self) -> None:
+        """Первая фаза (скачивание) видна в прогрессе, не дожидаясь конца."""
+        source = FakeSource(delays={1: 0.01, 2: 0.01, 3: 0.01})
+        recorder = ReportRecorder(total_chapters=3)
+        updates: list[Progress] = []
+        downloader = ChapterDownloader(source, recorder, concurrency=1, on_progress=updates.append)
+
+        chapters = [chapter(index) for index in range(1, 4)]
+        asyncio.run(downloader.fetch_all([ChapterTask(c) for c in chapters], book_slug="slug"))
+
+        fetch_only = [p for p in updates if p.last_event is None]
+        assert [p.fetched for p in fetch_only] == [0, 1, 2, 3]
+        assert all(p.done == 0 for p in fetch_only)
 
     def test_one_event_per_chapter_with_three_failures(self) -> None:
         source = FakeSource(failing={5, 100, 700})

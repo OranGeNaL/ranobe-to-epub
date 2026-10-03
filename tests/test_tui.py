@@ -423,6 +423,31 @@ class TestProgressScreen:
             assert "3/3" in str(app.screen.query_one("#images_info", Static).content)
             assert app.screen.query_one("#chapters", ProgressBar).progress == 3
 
+    async def test_download_phase_is_visible_before_first_chapter(self) -> None:
+        gate = asyncio.Event()
+
+        async def build(plan, on_progress, on_notice):
+            on_progress(Progress(fetched=3, total=10, elapsed=2.0))
+            await asyncio.sleep(0)
+            await gate.wait()
+            recorder = ReportRecorder(total_chapters=10)
+            recorder.finished("/tmp/book.epub", 1)
+            return recorder
+
+        app = ExporterApp(load_metadata=loader(single_team_chapters()), build=build)
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            await enter_confirm(pilot, app)
+            await pilot.pause(0.15)
+
+            assert isinstance(app.screen, ProgressScreen)
+            assert "Скачивание" in str(app.screen.query_one("#chapter_info", Static).content)
+            assert app.screen.query_one("#chapters", ProgressBar).progress == 3
+
+            gate.set()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
     async def test_slow_build_does_not_block_ui(self) -> None:
         build = GatedBuild(total=10, prompts=3)
         app = ExporterApp(load_metadata=loader(single_team_chapters()), build=build)

@@ -80,6 +80,12 @@ def progress_line(progress: Progress) -> str:
     return progress.render()
 
 
+def journal_line(printer: Printer, progress: Progress) -> None:
+    """Неинтерактивный режим печатает строку на главу, а не промежуточный прогресс."""
+    if progress.last_event is not None:
+        printer.line(progress_line(progress))
+
+
 async def collect(
     source: RanobeLibSource,
     slug: str,
@@ -139,7 +145,7 @@ async def run_build(
         downloader = ChapterDownloader(
             source,
             recorder,
-            on_progress=lambda progress: printer.line(progress_line(progress)),
+            on_progress=lambda progress: journal_line(printer, progress),
             max_image_mb=options.max_image_mb,
             max_image_width=options.max_image_width,
             quality=options.quality,

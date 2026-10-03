@@ -401,7 +401,8 @@ class ProgressScreen(Screen[None]):
     def _apply(self, progress: Progress) -> None:
         self.last = progress
         bar = self.query_one("#chapters", ProgressBar)
-        bar.update(total=progress.total or 1, progress=progress.done)
+        done = progress.fetched if progress.downloading else progress.done
+        bar.update(total=progress.total or 1, progress=done)
         self.query_one("#chapter_info", Static).update(_chapter_line(progress))
         images = self.query_one("#images", ProgressBar)
         images.update(total=progress.images_total or 1, progress=progress.images_done)
@@ -461,6 +462,11 @@ def _team_label(name: str, covered: int, total: int) -> str:
 def _chapter_line(progress: Progress) -> str:
     if not progress.total:
         return "Главы: подготовка…"
+    if progress.downloading:
+        return (
+            f"Скачивание глав: {progress.fetched}/{progress.total} "
+            f"({progress.fetch_percent:.1f}%) · прошло {_eta_text(progress.elapsed)}"
+        )
     return (
         f"Главы: {progress.done}/{progress.total} ({progress.percent:.1f}%) · "
         f"{progress.speed:.2f} глав/с · осталось {_eta_text(progress.eta)}"

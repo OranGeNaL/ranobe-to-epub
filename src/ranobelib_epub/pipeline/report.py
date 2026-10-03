@@ -155,6 +155,7 @@ class Progress:
     """Снимок прогресса для TUI и stdout (12.4, 14.6)."""
 
     done: int = 0
+    fetched: int = 0
     total: int = 0
     elapsed: float = 0.0
     current_label: str = ""
@@ -167,6 +168,7 @@ class Progress:
         """Неизменяемая копия для подписчиков прогресса."""
         return Progress(
             done=self.done,
+            fetched=self.fetched,
             total=self.total,
             elapsed=self.elapsed,
             current_label=self.current_label,
@@ -175,6 +177,11 @@ class Progress:
             last_event=self.last_event,
             _started=self._started,
         )
+
+    @property
+    def downloading(self) -> bool:
+        """Идёт первая фаза — параллельное скачивание содержимого глав."""
+        return self.done == 0 and self.fetched < self.total
 
     @property
     def percent(self) -> float:
@@ -191,8 +198,17 @@ class Progress:
         remaining = max(0, self.total - self.done)
         return remaining / self.speed if self.speed > 0 else 0.0
 
+    @property
+    def fetch_percent(self) -> float:
+        return (self.fetched / self.total * 100) if self.total else 0.0
+
     def render(self) -> str:
-        """Строка прогресса: номер, всего, скорость и оценка."""
+        """Строка прогресса: фаза скачивания или фаза обработки глав."""
+        if self.downloading:
+            return (
+                f"скачано {self.fetched}/{self.total} глав "
+                f"({self.fetch_percent:.1f}%) · прошло {_human_duration(self.elapsed)}"
+            )
         return (
             f"{self.done}/{self.total} глав "
             f"({self.percent:.1f}%) · {self.speed:.2f} глав/с · "

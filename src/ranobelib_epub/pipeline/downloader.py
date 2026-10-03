@@ -245,12 +245,20 @@ class ChapterDownloader:
         self.book_slug = book_slug
         items = list(tasks)
         self.progress = Progress(total=len(items), _started=time.monotonic())
+        self._emit_progress()
         loaded: list[tuple[ChapterContent | None, str | None]] = [(None, None)] * len(items)
+        downloaded = 0
 
         async def load(index: int, task: ChapterTask) -> None:
+            nonlocal downloaded
             if cancel is not None and cancel.is_set():
                 return
             loaded[index] = await self._load(task)
+            downloaded += 1
+            self.progress.fetched = downloaded
+            self.progress.current_label = task.chapter.label or ""
+            self.progress.elapsed = max(0.0, time.monotonic() - self.progress._started)
+            self._emit_progress()
 
         await asyncio.gather(*(load(index, task) for index, task in enumerate(items)))
 
@@ -286,12 +294,13 @@ class ChapterDownloader:
             self.progress.current_label = task.chapter.label or ""
             self.progress.elapsed = max(0.0, time.monotonic() - self.progress._started)
             self.progress.last_event = event
-            if self.on_progress is not None:
-                # Отдаётся снимок, а не сам объект: подписчик TUI может сохранять
-                # обновления, и общий изменяемый экземпляр показывал бы ему
-                # последнее состояние вместо состояния на момент события.
-                self.on_progress(self.progress.snapshot())
+            self._emit_progress()
         return results
+
+    def _emit_progress(self) -> None:
+        """Отдаёт снимок, а не сам объект: подписчик не должен видеть поздние правки."""
+        if self.on_progress is not None:
+            self.on_progress(self.progress.snapshot())
 
 
 def _chapter_title(chapter: Chapter) -> str:
