@@ -9,12 +9,22 @@ from typing import Any
 import httpx
 import pytest
 
-from ranobelib_epub.source.api import RanobeLibSource, is_authorization_error, unavailable_reason
+from ranobelib_epub.source.api import (
+    NO_BRANCH_REASON,
+    RanobeLibSource,
+    describe_failure,
+    is_authorization_error,
+    unavailable_reason,
+)
 from ranobelib_epub.source.client import (
+    ApiError,
+    ApiUnavailableError,
     AuthorizationRequiredError,
     BookNotFoundError,
     ClientConfig,
+    MissingParameterError,
     RanobeLibClient,
+    WafBlockedError,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -172,3 +182,70 @@ class TestUnavailableChapters:
         chapters = await source.fetch_chapters(SLUG)
 
         assert unavailable_reason(chapters[0]) is None
+
+
+class TestDescribeFailure:
+    def test_timeout_names_endpoint(self) -> None:
+        text = describe_failure(httpx.ReadTimeout("timed out"), endpoint="/manga/x/chapter")
+
+        assert "таймаут" in text
+        assert "/manga/x/chapter" in text
+
+    def test_network_error(self) -> None:
+        assert "сетевая ошибка" in describe_failure(httpx.ConnectError("refused"))
+
+    def test_waf_points_to_headers(self) -> None:
+        text = describe_failure(WafBlockedError("403"))
+
+        assert "защит" in text
+        assert "Site-Id" in text
+
+    def test_authorization_is_not_bypassed(self) -> None:
+        text = describe_failure(AuthorizationRequiredError("401"))
+
+        assert "авторизац" in text
+        assert "обход" in text
+
+    def test_not_found(self) -> None:
+        assert "404" in describe_failure(BookNotFoundError("missing"))
+
+    def test_missing_parameter(self) -> None:
+        assert "422" in describe_failure(MissingParameterError("volume"))
+
+    def test_retries_exhausted_mentions_status(self) -> None:
+        error = ApiUnavailableError(
+            "Не удалось получить /x после 3 попыток (последний статус: 503)"
+        )
+
+        text = describe_failure(error)
+
+        assert "исчерпаны повторы" in text
+        assert "503" in text
+
+    def test_non_json_response(self) -> None:
+        text = describe_failure(ApiError("Ответ на /x не является JSON: boom"))
+
+        assert "некорректный ответ" in text
+
+    def test_unknown_error_keeps_type_and_message(self) -> None:
+        text = describe_failure(RuntimeError("взорвалось"))
+
+        assert "RuntimeError" in text
+        assert "взорвалось" in text
+
+
+class TestStaticReasons:
+    async def test_expired_reason_explains_no_bypass(self) -> None:
+        source, _ = build_source(fixture_handler("chapters.json"))
+        chapter = (await source.fetch_chapters(SLUG))[0]
+        chapter.expired_type = 2
+
+        reason = unavailable_reason(chapter)
+
+        assert reason is not None
+        assert "expired_type=2" in reason
+        assert "обход" in reason
+
+    def test_no_branch_reason_is_detailed(self) -> None:
+        assert "ветки перевода" in NO_BRANCH_REASON
+        assert "обход" in NO_BRANCH_REASON

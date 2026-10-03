@@ -21,8 +21,7 @@ from ranobelib_epub.source.client import (
 )
 
 WAF_HTML = (
-    "<!DOCTYPE html>\n<html><head><title>403 Forbidden</title></head>"
-    "<body>blocked</body></html>"
+    "<!DOCTYPE html>\n<html><head><title>403 Forbidden</title></head><body>blocked</body></html>"
 )
 
 
@@ -200,6 +199,34 @@ class TestRetries:
                 await client.get_json("/manga/x")
 
         assert client.recorded_sleeps == [0.5, 1.0], "нарастающая задержка между попытками"
+
+    async def test_retries_exhausted_reports_last_status(self) -> None:
+        seen: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(503)
+            return httpx.Response(503, json={"data": {}})
+
+        async with build_client(handler, retries=3) as client:
+            with pytest.raises(ApiUnavailableError) as info:
+                await client.get_json("/manga/x")
+
+        message = str(info.value)
+        assert "3 попыток" in message
+        assert "последний статус: 503" in message
+        assert len(seen) == 3
+
+    async def test_bytes_retries_exhausted_reports_last_status(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(504, json={"data": {}})
+
+        async with build_client(handler, retries=2) as client:
+            with pytest.raises(ApiUnavailableError) as info:
+                await client.get_bytes("https://cdn.example/img.png")
+
+        message = str(info.value)
+        assert "2 попыток" in message
+        assert "последний статус: 504" in message
 
 
 class TestThrottling:

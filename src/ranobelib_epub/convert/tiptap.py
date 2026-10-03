@@ -31,6 +31,7 @@ def placeholder(key: str) -> str:
     """Текстовая заглушка вместо недоступной иллюстрации."""
     return PLACEHOLDER_TEMPLATE.format(url=key)
 
+
 #: Узлы, которые не имеют представления в книге, но должны сохранять своё содержимое.
 _CONTAINER_TAGS = {
     "doc": "div",
@@ -84,9 +85,7 @@ def _render_children(
     node: dict, result: ConversionResult, resolver: ImageResolver | None = None
 ) -> str:
     parts = [
-        _render_node(child, result, resolver)
-        for child in node.get("content", []) or []
-        if child
+        _render_node(child, result, resolver) for child in node.get("content", []) or [] if child
     ]
     return "".join(parts)
 
@@ -118,9 +117,9 @@ def _text_with_marks(node: dict, result: ConversionResult) -> str:
             tag = "sub" if kind == "subscript" else "sup"
             rendered = f"<{tag}>{rendered}</{tag}>"
         elif kind == "underline":
-            rendered = f"<span class=\"underline\">{rendered}</span>"
+            rendered = f'<span class="underline">{rendered}</span>'
         elif kind == "strikethrough":
-            rendered = f"<span class=\"strikethrough\">{rendered}</span>"
+            rendered = f'<span class="strikethrough">{rendered}</span>'
         elif kind == "highlight":
             color = attrs.get("color") or "yellow"
             safe_color = escape(color, {chr(34): "&quot;"})
@@ -153,7 +152,7 @@ def _render_image(node: dict, result: ConversionResult, resolver: ImageResolver 
             result.warnings.append(f"иллюстрация {key} недоступна, вставлена заглушка")
             out.append(f'<span class="missing-image">{escape(placeholder(key))}</span>')
             continue
-        out.append(f'<img src={quoteattr(src)} alt={quoteattr(alt)} />')
+        out.append(f"<img src={quoteattr(src)} alt={quoteattr(alt)} />")
 
     if not out:
         result.warnings.append("узел image без файлов пропущен")

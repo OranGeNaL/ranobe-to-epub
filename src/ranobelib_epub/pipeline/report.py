@@ -125,6 +125,31 @@ class DownloadOutcome:
         return self.chapter is not None
 
 
+@dataclass(frozen=True, slots=True)
+class ChapterEvent:
+    """Событие одной обработанной главы: успех или пропуск (решение 1).
+
+    Строку журнала формирует сам объект, чтобы формат не разъезжался между
+    неинтерактивным выводом и панелью TUI.
+    """
+
+    position: int
+    total: int
+    label: str
+    name: str
+    built: bool
+    reason: str | None = None
+    images: int = 0
+
+    def render(self) -> str:
+        """Строка журнала: номер, название и статус с деталями."""
+        title = self.name or self.label
+        header = f"[{self.position}/{self.total}] {self.label} «{title}»"
+        if self.built:
+            return f"{header} — собрана (изображений: {self.images})"
+        return f"{header} — пропущена: {self.reason or 'причина неизвестна'}"
+
+
 @dataclass(slots=True)
 class Progress:
     """Снимок прогресса для TUI и stdout (12.4, 14.6)."""
@@ -135,6 +160,7 @@ class Progress:
     current_label: str = ""
     images_done: int = 0
     images_total: int = 0
+    last_event: ChapterEvent | None = None
     _started: float = field(default=0.0)
 
     def snapshot(self) -> Progress:
@@ -146,6 +172,7 @@ class Progress:
             current_label=self.current_label,
             images_done=self.images_done,
             images_total=self.images_total,
+            last_event=self.last_event,
             _started=self._started,
         )
 

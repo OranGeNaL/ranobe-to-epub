@@ -133,10 +133,7 @@ class TestLists:
             }
         )
 
-        assert (
-            html_of(document)
-            == "<ul><li>внешний<ul><li>вложенный</li></ul></li></ul>"
-        )
+        assert html_of(document) == "<ul><li>внешний<ul><li>вложенный</li></ul></li></ul>"
 
     def test_ordered_list_start_attribute_is_dropped_safely(self) -> None:
         document = doc(
@@ -190,7 +187,9 @@ class TestMarks:
         document = doc(
             {
                 "type": "paragraph",
-                "content": [text("сайт", {"type": "link", "attrs": {"href": "https://example.org"}})],
+                "content": [
+                    text("сайт", {"type": "link", "attrs": {"href": "https://example.org"}})
+                ],
             }
         )
 

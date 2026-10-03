@@ -209,8 +209,7 @@ class TestFilenames:
         from ranobelib_epub.images.pipeline import ImageAsset
 
         assets = [
-            ImageAsset(filename="", data=b"", source_url="", mime="image/jpeg")
-            for _ in range(25)
+            ImageAsset(filename="", data=b"", source_url="", mime="image/jpeg") for _ in range(25)
         ]
 
         assigned = assign_filenames(assets)

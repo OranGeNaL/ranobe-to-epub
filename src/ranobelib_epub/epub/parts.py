@@ -86,7 +86,7 @@ def package_opf(
         HEADER,
         f'<package xmlns="{_OPF_NS}" version="3.0" unique-identifier="bookid">',
         '  <metadata xmlns:dc="' + _DC_NS + '">',
-        f"    <dc:identifier id=\"bookid\">{identifier}</dc:identifier>",
+        f'    <dc:identifier id="bookid">{identifier}</dc:identifier>',
         f"    <dc:title>{title}</dc:title>",
         f"    <dc:language>{language}</dc:language>",
     ]
@@ -97,7 +97,7 @@ def package_opf(
         lines.append(f"    <dc:description>{escape(book.summary)}</dc:description>")
     if book.genres:
         joined = ", ".join(book.genres)
-        lines.append(f'    <dc:subject>{escape(joined)}</dc:subject>')
+        lines.append(f"    <dc:subject>{escape(joined)}</dc:subject>")
 
     lines.append(f"    <dc:date>{stamp}</dc:date>")
     lines.append('    <meta property="dcterms:modified">' + f"{stamp}T00:00:00Z</meta>")
@@ -107,8 +107,9 @@ def package_opf(
 
     lines.append("  </metadata>")
     lines.append("  <manifest>")
-    lines.append('    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" '
-                 'properties="nav"/>')
+    lines.append(
+        '    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+    )
     lines.append('    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>')
 
     for entry in chapters:
@@ -122,8 +123,8 @@ def package_opf(
         properties = ' properties="cover-image"' if href in cover_set else ""
         item_id = "cover-image" if href in cover_set else f"img{index}"
         lines.append(
-            f'    <item id={quoteattr(item_id)} href={quoteattr(href)} '
-            f'media-type={quoteattr(mime)}{properties}/>'
+            f"    <item id={quoteattr(item_id)} href={quoteattr(href)} "
+            f"media-type={quoteattr(mime)}{properties}/>"
         )
 
     lines.append("  </manifest>")
@@ -142,7 +143,7 @@ def nav_xhtml(book: Book, chapters: list[ChapterEntry]) -> str:
         for entry in chapters
     )
     return (
-        f"{HEADER}<html xmlns=\"{_XHTML_NS}\" xmlns:epub=\"http://www.idpf.org/2007/ops\" "
+        f'{HEADER}<html xmlns="{_XHTML_NS}" xmlns:epub="http://www.idpf.org/2007/ops" '
         'xml:lang="' + escape(_language_tag(book.in_language)) + '">\n'
         "  <head>\n"
         "    <title>" + escape(book.title) + "</title>\n"
@@ -170,12 +171,12 @@ def toc_ncx(chapters: list[ChapterEntry], book: Book) -> str:
     )
     identifier = escape(book_identifier(book))
     return (
-        f"{HEADER}<ncx xmlns=\"{_NCX_NS}\" version=\"2005-1\">\n"
+        f'{HEADER}<ncx xmlns="{_NCX_NS}" version="2005-1">\n'
         "  <head>\n"
         f'    <meta name="dtb:uid" content={quoteattr(identifier)}/>\n'
-        "    <meta name=\"dtb:depth\" content=\"1\"/>\n"
+        '    <meta name="dtb:depth" content="1"/>\n'
         "  </head>\n"
-        f'  <docTitle><text>{escape(book.title)}</text></docTitle>\n'
+        f"  <docTitle><text>{escape(book.title)}</text></docTitle>\n"
         f'  <navMap id="navMap">\n{points}\n  </navMap>\n'
         "</ncx>\n"
     )

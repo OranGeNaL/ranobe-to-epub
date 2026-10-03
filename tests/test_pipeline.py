@@ -21,6 +21,7 @@ from ranobelib_epub.pipeline.downloader import (
 )
 from ranobelib_epub.pipeline.report import (
     MANDATORY_NOTES,
+    ChapterEvent,
     Progress,
     ReportRecorder,
 )
@@ -43,15 +44,22 @@ def chapter(index: int, volume: int = 1, name: str = "Глава") -> Chapter:
 class FakeSource:
     """Источник, который отдаёт заготовки и умеет падать на выбранных главах."""
 
-    def __init__(self, failing: set[int] | None = None, delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        failing: set[int] | None = None,
+        delay: float = 0.0,
+        delays: dict[int, float] | None = None,
+    ) -> None:
         self.failing = failing or set()
         self.delay = delay
+        self.delays = delays or {}
         self.calls: list[int] = []
 
     async def fetch_chapter_content(self, slug, chapter_, branch_id):
         self.calls.append(chapter_.id)
-        if self.delay:
-            await asyncio.sleep(self.delay)
+        delay = self.delays.get(chapter_.id, self.delay)
+        if delay:
+            await asyncio.sleep(delay)
         if chapter_.id in self.failing:
             raise RuntimeError(f"глава {chapter_.id}: сеть недоступна")
         from ranobelib_epub.models import ChapterContent
@@ -64,9 +72,7 @@ class FakeSource:
                 "content": [
                     {
                         "type": "paragraph",
-                        "content": [
-                            {"type": "text", "text": f"Текст главы {chapter_.id}"}
-                        ],
+                        "content": [{"type": "text", "text": f"Текст главы {chapter_.id}"}],
                     }
                 ],
             },
@@ -219,9 +225,7 @@ class TestPartialBuild:
 
         chapters = [chapter(index) for index in range(1, 101)]
         results = asyncio.run(
-            downloader.fetch_all(
-                [ChapterTask(item) for item in chapters], book_slug="slug"
-            )
+            downloader.fetch_all([ChapterTask(item) for item in chapters], book_slug="slug")
         )
 
         assert len(results) == 97, "EPUB должен содержать 97 глав"
@@ -270,7 +274,9 @@ class TestPartialBuild:
 
         assert results == []
         assert source.calls == []
-        assert recorder.report.unavailable[0].reason == "нет ветки перевода"
+        reason = recorder.report.unavailable[0].reason
+        assert "нет ветки перевода" in reason
+        assert "обход" in reason, "причина должна объяснять, почему запрос не делается"
 
 
 class TestConcurrencyAndThrottling:
@@ -462,6 +468,121 @@ class TestProgress:
 
         assert [p.done for p in seen] == [1, 2, 3, 4, 5]
         assert seen[-1].total == 5
+
+
+class TestChapterEventJournal:
+    def test_built_line_has_number_name_and_images(self) -> None:
+        event = ChapterEvent(position=3, total=735, label="1.5", name="Глава", built=True, images=2)
+
+        assert event.render() == "[3/735] 1.5 «Глава» — собрана (изображений: 2)"
+
+    def test_unavailable_line_has_number_name_and_reason(self) -> None:
+        event = ChapterEvent(
+            position=4,
+            total=10,
+            label="1.6",
+            name="Глава",
+            built=False,
+            reason="таймаут запроса",
+        )
+
+        text = event.render()
+
+        assert "[4/10]" in text
+        assert "1.6" in text
+        assert "Глава" in text
+        assert "пропущена" in text
+        assert "таймаут запроса" in text
+
+    def test_missing_name_falls_back_to_label(self) -> None:
+        event = ChapterEvent(position=1, total=1, label="1.1", name="", built=True)
+
+        assert "«1.1»" in event.render()
+
+
+class TestProgressSnapshotWithEvent:
+    def test_snapshot_keeps_event_and_counters(self) -> None:
+        event = ChapterEvent(position=2, total=5, label="1.2", name="Глава 2", built=True)
+        progress = Progress(done=2, total=5, last_event=event)
+
+        snapshot = progress.snapshot()
+
+        assert snapshot.last_event == event
+        assert snapshot.done == 2
+        assert snapshot.total == 5
+
+
+class TestLoadReturnsReason:
+    def test_load_does_not_touch_report_on_success(self) -> None:
+        source = FakeSource()
+        recorder = ReportRecorder(total_chapters=2)
+        downloader = ChapterDownloader(source, recorder)
+
+        content, reason = asyncio.run(downloader._load(ChapterTask(chapter(1))))
+
+        assert content is not None
+        assert reason is None
+        assert recorder.report.built_chapters == 0
+        assert recorder.report.unavailable == []
+
+    def test_failed_load_returns_reason_without_report_entry(self) -> None:
+        source = FakeSource(failing={1})
+        recorder = ReportRecorder()
+        downloader = ChapterDownloader(source, recorder)
+
+        content, reason = asyncio.run(downloader._load(ChapterTask(chapter(1))))
+
+        assert content is None
+        assert reason
+        assert recorder.report.unavailable == []
+
+
+class TestOrderedJournal:
+    def test_events_and_report_follow_reading_order(self) -> None:
+        """Глава 2 падает раньше медленной главы 1, но её событие остаётся вторым."""
+        source = FakeSource(failing={2}, delays={1: 0.03, 2: 0.001, 3: 0.0})
+        recorder = ReportRecorder(total_chapters=3)
+        updates: list[Progress] = []
+        events: list[ChapterEvent] = []
+
+        def collect(progress: Progress) -> None:
+            updates.append(progress)
+            if progress.last_event is not None:
+                events.append(progress.last_event)
+
+        downloader = ChapterDownloader(source, recorder, concurrency=3, on_progress=collect)
+
+        chapters = [chapter(index) for index in range(1, 4)]
+        results = asyncio.run(
+            downloader.fetch_all([ChapterTask(c) for c in chapters], book_slug="slug")
+        )
+
+        assert [event.position for event in events] == [1, 2, 3]
+        assert [progress.done for progress in updates] == [1, 1, 2]
+        assert len(results) == 2
+        assert [event.label for event in events if not event.built] == ["1.2"]
+        assert [item.label for item in recorder.report.unavailable] == ["1.2"]
+
+    def test_one_event_per_chapter_with_three_failures(self) -> None:
+        source = FakeSource(failing={5, 100, 700})
+        recorder = ReportRecorder(total_chapters=735)
+        events: list[ChapterEvent] = []
+
+        def collect(progress: Progress) -> None:
+            if progress.last_event is not None:
+                events.append(progress.last_event)
+
+        downloader = ChapterDownloader(source, recorder, concurrency=8, on_progress=collect)
+
+        chapters = [chapter(index) for index in range(1, 736)]
+        asyncio.run(downloader.fetch_all([ChapterTask(c) for c in chapters], book_slug="slug"))
+
+        assert len(events) == 735
+        assert [event.position for event in events] == list(range(1, 736))
+        skipped = [event for event in events if not event.built]
+        assert len(skipped) == 3
+        assert {event.label for event in skipped} == {"1.5", "1.100", "1.700"}
+        assert all(event.reason for event in skipped)
 
 
 class TestChapterSelector:

@@ -79,5 +79,6 @@ class TestReport:
 
     def test_age_confirmed_requires_confirmed_chapters(self) -> None:
         assert Report(age_confirmed_chapters=1).age_confirmed is True
+
     def test_numbers_may_arrive_as_ints(self) -> None:
         assert number_sort_key(1, 25) == number_sort_key(1, "25")

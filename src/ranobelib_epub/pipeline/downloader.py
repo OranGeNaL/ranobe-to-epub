@@ -32,9 +32,15 @@ from ..images.pipeline import (
     fetch_image,
 )
 from ..models import Book, Chapter, ChapterContent
-from ..source.api import RanobeLibSource, unavailable_reason
+from ..source.api import (
+    CHAPTER_PATH,
+    NO_BRANCH_REASON,
+    RanobeLibSource,
+    describe_failure,
+    unavailable_reason,
+)
 from ..source.translations import Coverage
-from .report import DownloadOutcome, Progress, ReportRecorder
+from .report import ChapterEvent, DownloadOutcome, Progress, ReportRecorder
 
 DEFAULT_CONCURRENCY = 4
 
@@ -87,28 +93,30 @@ class ChapterDownloader:
         self.include_images = include_images
         self._image_index = 0
 
-    async def _load(self, task: ChapterTask) -> ChapterContent | None:
-        """Сетевой шаг: содержимое главы или `None` с записью причины в отчёт."""
+    async def _load(self, task: ChapterTask) -> tuple[ChapterContent | None, str | None]:
+        """Сетевой шаг: пара `(содержимое, причина)`.
+
+        В отчёт ничего не пишется: это делает упорядоченный проход `fetch_all`, иначе
+        причины шли бы в порядке завершения параллельных запросов (решение 2).
+        """
         chapter = task.chapter
 
         static = unavailable_reason(chapter)
         if static:
-            self.recorder.chapter_unavailable(chapter, static)
-            return None
+            return None, static
 
         if chapter.branch_id is None:
-            self.recorder.chapter_unavailable(chapter, "нет ветки перевода")
-            return None
+            return None, NO_BRANCH_REASON
 
         async with self.semaphore:
             try:
                 content = await self.source.fetch_chapter_content(
                     self.book_slug, chapter, chapter.branch_id
                 )
-            except Exception as error:  # причина уходит в отчёт, глава пропускается
-                self.recorder.chapter_unavailable(chapter, _reason(error))
-                return None
-        return content
+            except Exception as error:
+                endpoint = CHAPTER_PATH.format(slug_url=self.book_slug) if self.book_slug else ""
+                return None, describe_failure(error, endpoint=endpoint)
+        return content, None
 
     async def _finalize(self, task: ChapterTask, content: ChapterContent) -> FetchedChapter:
         """Фильтрация, изображения и конвертация главы в XHTML."""
@@ -139,8 +147,9 @@ class ChapterDownloader:
 
     async def fetch_one(self, task: ChapterTask) -> FetchedChapter | None:
         """Одна глава; `None` — глава попала в отчёт как недоступная."""
-        content = await self._load(task)
+        content, reason = await self._load(task)
         if content is None:
+            self.recorder.chapter_unavailable(task.chapter, reason or "причина неизвестна")
             return None
         return await self._finalize(task, content)
 
@@ -177,7 +186,7 @@ class ChapterDownloader:
                     raw, self.max_image_mb, self.max_image_width, self.quality
                 )
             except Exception as error:
-                self.recorder.image_missing(url, _reason(error), label, key)
+                self.recorder.image_missing(url, describe_failure(error), label, key)
                 resolver[key] = ""
                 self.progress.images_done += 1
                 continue
@@ -204,7 +213,7 @@ class ChapterDownloader:
                 raw, self.max_image_mb, self.max_image_width, self.quality
             )
         except Exception as error:
-            self.recorder.image_missing(url, _reason(error), "обложка", "cover")
+            self.recorder.image_missing(url, describe_failure(error), "обложка", "cover")
             return None
         self._image_index += 1
         asset.filename = epub_filename(self._image_index, asset.mime)
@@ -228,11 +237,15 @@ class ChapterDownloader:
         порядку: только так имена картинок (`img_0001`, `img_0002`, …) зависят от
         порядка чтения, а не от того, какая глава успела первой, и повторная сборка
         даёт тот же архив.
+
+        В отчёт и в поток прогресса всё попадает в этом же упорядоченном проходе, ровно
+        одно событие `ChapterEvent` на главу — и для собранных, и для недоступных
+        (решение 2). Поэтому порядок журнала не зависит от порядка завершения запросов.
         """
         self.book_slug = book_slug
         items = list(tasks)
         self.progress = Progress(total=len(items), _started=time.monotonic())
-        loaded: list[ChapterContent | None] = [None] * len(items)
+        loaded: list[tuple[ChapterContent | None, str | None]] = [(None, None)] * len(items)
 
         async def load(index: int, task: ChapterTask) -> None:
             if cancel is not None and cancel.is_set():
@@ -242,16 +255,37 @@ class ChapterDownloader:
         await asyncio.gather(*(load(index, task) for index, task in enumerate(items)))
 
         results: list[FetchedChapter] = []
-        for index, content in enumerate(loaded):
-            if content is None:
-                continue
+        for index, task in enumerate(items):
             if cancel is not None and cancel.is_set():
                 break
-            task = items[index]
-            results.append(await self._finalize(task, content))
-            self.progress.done += 1
+            content, reason = loaded[index]
+            label = task.chapter.label or f"{task.chapter.volume}.{task.chapter.number}"
+            if content is None:
+                failure = reason or "причина неизвестна"
+                self.recorder.chapter_unavailable(task.chapter, failure)
+                event = ChapterEvent(
+                    position=index + 1,
+                    total=len(items),
+                    label=label,
+                    name=task.chapter.name,
+                    built=False,
+                    reason=failure,
+                )
+            else:
+                fetched = await self._finalize(task, content)
+                results.append(fetched)
+                self.progress.done += 1
+                event = ChapterEvent(
+                    position=index + 1,
+                    total=len(items),
+                    label=label,
+                    name=task.chapter.name,
+                    built=True,
+                    images=len(fetched.assets),
+                )
             self.progress.current_label = task.chapter.label or ""
             self.progress.elapsed = max(0.0, time.monotonic() - self.progress._started)
+            self.progress.last_event = event
             if self.on_progress is not None:
                 # Отдаётся снимок, а не сам объект: подписчик TUI может сохранять
                 # обновления, и общий изменяемый экземпляр показывал бы ему
@@ -265,11 +299,6 @@ def _chapter_title(chapter: Chapter) -> str:
     return f"{label} {chapter.name}".strip()
 
 
-def _reason(error: Exception) -> str:
-    message = str(error).strip()
-    return message or type(error).__name__
-
-
 async def compress_in_thread(
     raw: bytes,
     max_image_mb: float,
@@ -279,9 +308,7 @@ async def compress_in_thread(
     """Сжатие Pillow вне event loop (12.2)."""
     from ..images.pipeline import filter_and_compress
 
-    return await asyncio.to_thread(
-        filter_and_compress, raw, max_image_mb, max_width, quality
-    )
+    return await asyncio.to_thread(filter_and_compress, raw, max_image_mb, max_width, quality)
 
 
 class StreamingWriter:

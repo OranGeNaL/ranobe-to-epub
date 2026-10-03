@@ -108,8 +108,7 @@ BUILTIN_SYMBOLS_CJK = CharsetProfile(
 FULL = CharsetProfile("full", FULL_RANGES, version="unicode-16.0")
 
 PROFILES: dict[str, CharsetProfile] = {
-    profile.name: profile
-    for profile in (BUILTIN, BUILTIN_SYMBOLS, BUILTIN_SYMBOLS_CJK, FULL)
+    profile.name: profile for profile in (BUILTIN, BUILTIN_SYMBOLS, BUILTIN_SYMBOLS_CJK, FULL)
 }
 
 DEFAULT_PROFILE = "builtin"

@@ -20,7 +20,7 @@ from ..pipeline.downloader import (
     ChapterDownloader,
     ChapterTask,
 )
-from ..pipeline.report import ReportRecorder
+from ..pipeline.report import Progress, ReportRecorder
 from ..source.age import confirm_age, requires_confirmation
 from ..source.api import RanobeLibSource
 from ..source.client import (
@@ -71,6 +71,13 @@ class Printer:
 
 def build_config(options: Options) -> ClientConfig:
     return ClientConfig(rate_limit=options.rate_limit, retries=options.retries)
+
+
+def progress_line(progress: Progress) -> str:
+    """Строка журнала по последней главе; без события — прежний агрегат (решение 6)."""
+    if progress.last_event is not None:
+        return progress.last_event.render()
+    return progress.render()
 
 
 async def collect(
@@ -132,7 +139,7 @@ async def run_build(
         downloader = ChapterDownloader(
             source,
             recorder,
-            on_progress=lambda progress: printer.line(progress.render()),
+            on_progress=lambda progress: printer.line(progress_line(progress)),
             max_image_mb=options.max_image_mb,
             max_image_width=options.max_image_width,
             quality=options.quality,

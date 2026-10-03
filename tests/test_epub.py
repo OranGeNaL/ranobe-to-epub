@@ -202,14 +202,17 @@ class TestCover:
     def test_cover_is_declared_with_meta_and_property(self) -> None:
         root = ET.fromstring(
             package_opf(
-                BOOK, [], images=[("Images/cover.jpg", "image/jpeg")],
+                BOOK,
+                [],
+                images=[("Images/cover.jpg", "image/jpeg")],
                 cover_item="Images/cover.jpg",
             )
         )
 
-        assert root.find('opf:metadata/opf:meta[@name="cover"]', OPF_NS).get(
-            "content"
-        ) == "cover-image"
+        assert (
+            root.find('opf:metadata/opf:meta[@name="cover"]', OPF_NS).get("content")
+            == "cover-image"
+        )
         cover = [
             item
             for item in root.findall("opf:manifest/opf:item", OPF_NS)
@@ -270,8 +273,8 @@ class TestNavigation:
         ]
 
         root = ET.fromstring(nav_xhtml(BOOK, entries))
-        nav = root.find('.//{http://www.w3.org/1999/xhtml}nav')
-        items = nav.findall('.//{http://www.w3.org/1999/xhtml}li')
+        nav = root.find(".//{http://www.w3.org/1999/xhtml}nav")
+        items = nav.findall(".//{http://www.w3.org/1999/xhtml}li")
 
         assert [item[0].text for item in items] == ["1.25 Первая", "15.12 Вторая", "1.22.5 Третья"]
         assert [item[0].get("href") for item in items] == [e.href for e in entries]
@@ -279,9 +282,12 @@ class TestNavigation:
     def test_nav_has_toc_type(self) -> None:
         root = ET.fromstring(nav_xhtml(BOOK, []))
 
-        assert root.find('.//{http://www.w3.org/1999/xhtml}nav').get(
-            "{http://www.idpf.org/2007/ops}type"
-        ) == "toc"
+        assert (
+            root.find(".//{http://www.w3.org/1999/xhtml}nav").get(
+                "{http://www.idpf.org/2007/ops}type"
+            )
+            == "toc"
+        )
 
     def test_ncx_play_order_and_numbers(self) -> None:
         entries = [
@@ -307,13 +313,12 @@ class TestNavigation:
         nav_hrefs = [
             item[0].get("href")
             for item in nav.findall(
-                './/{http://www.w3.org/1999/xhtml}ol/{http://www.w3.org/1999/xhtml}li'
+                ".//{http://www.w3.org/1999/xhtml}ol/{http://www.w3.org/1999/xhtml}li"
             )
         ]
         ncx_srcs = [
-            point.find("ncx:content", NCX_NS).get("src") for point in ncx.findall(
-                "ncx:navMap/ncx:navPoint", NCX_NS
-            )
+            point.find("ncx:content", NCX_NS).get("src")
+            for point in ncx.findall("ncx:navMap/ncx:navPoint", NCX_NS)
         ]
 
         assert nav_hrefs == ncx_srcs
@@ -337,9 +342,7 @@ class TestRealBookNavigation:
         ]
 
         root = ET.fromstring(nav_xhtml(BOOK, entries))
-        items = root.findall(
-            './/{http://www.w3.org/1999/xhtml}ol/{http://www.w3.org/1999/xhtml}li'
-        )
+        items = root.findall(".//{http://www.w3.org/1999/xhtml}ol/{http://www.w3.org/1999/xhtml}li")
 
         assert len(items) == 735
 
@@ -350,9 +353,7 @@ class TestRealBookNavigation:
         ]
 
         root = ET.fromstring(nav_xhtml(BOOK, entries))
-        items = root.findall(
-            './/{http://www.w3.org/1999/xhtml}ol/{http://www.w3.org/1999/xhtml}li'
-        )
+        items = root.findall(".//{http://www.w3.org/1999/xhtml}ol/{http://www.w3.org/1999/xhtml}li")
 
         assert [item[0].text for item in items] == [ch.label for ch in chapters]
 
@@ -570,9 +571,7 @@ class TestMinimalBuild:
 
         result = builder.write(tmp_path / "many.epub")
 
-        assert list(iter_chapter_files(result)) == [
-            f"{TEXT_DIR}/{i}.html" for i in (1, 2, 3)
-        ]
+        assert list(iter_chapter_files(result)) == [f"{TEXT_DIR}/{i}.html" for i in (1, 2, 3)]
 
     def test_epubcheck_accepts_file(self, tmp_path: Path) -> None:
         """Сторонний валидатор: EPUB должен пройти без ошибок и предупреждений.

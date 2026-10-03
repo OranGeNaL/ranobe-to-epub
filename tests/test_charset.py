@@ -35,9 +35,7 @@ class TestBuiltinRanges:
     def test_preset_version_is_declared(self) -> None:
         assert CROSSPOINT_PRESET_VERSION.startswith("builtin-")
 
-    @pytest.mark.parametrize(
-        "char", ["Ѐ", "Ё", "Ж", "џ", "Ё", "\u0401"]
-    )
+    @pytest.mark.parametrize("char", ["Ѐ", "Ё", "Ж", "џ", "Ё", "\u0401"])
     def test_cyrillic_supported(self, char: str) -> None:
         assert BUILTIN.supports(char)
 
@@ -65,15 +63,15 @@ class TestBuiltinRanges:
         assert BUILTIN_SYMBOLS.supports("№") is True
 
     def test_emoji_block_excluded(self) -> None:
-        assert not BUILTIN.supports("\U0001F300")
-        assert not BUILTIN.supports("\U0001FAFF")
+        assert not BUILTIN.supports("\U0001f300")
+        assert not BUILTIN.supports("\U0001faff")
 
     def test_box_drawing_excluded(self) -> None:
         assert not BUILTIN.supports("─")
         assert not BUILTIN.supports("│")
 
     def test_math_alphanumeric_excluded(self) -> None:
-        assert not BUILTIN.supports("\U0001D400")
+        assert not BUILTIN.supports("\U0001d400")
 
     def test_unknown_private_use_excluded(self) -> None:
         assert not BUILTIN.supports("")
@@ -104,11 +102,11 @@ class TestProfiles:
         assert stats.removed_clusters == 0
 
     def test_symbols_keeps_math_alphabetic_but_builtin_does_not(self) -> None:
-        assert BUILTIN_SYMBOLS.supports("\U0001D400") is False
-        assert FULL.supports("\U0001D400") is True
+        assert BUILTIN_SYMBOLS.supports("\U0001d400") is False
+        assert FULL.supports("\U0001d400") is True
 
     def test_full_keeps_everything(self) -> None:
-        for char in ["─", "\U0001F300", "\U0001D400", "Ё", "、"]:
+        for char in ["─", "\U0001f300", "\U0001d400", "Ё", "、"]:
             assert FULL.supports(char), char
 
     def test_cjk_profile_keeps_japanese(self) -> None:
@@ -142,12 +140,12 @@ class TestGraphemeClusters:
         assert list(iter_clusters("é")) == ["é"]
 
     def test_skin_tone_modifier_joins_emoji(self) -> None:
-        thumb = "\U0001F44D\U0001F3FD"
+        thumb = "\U0001f44d\U0001f3fd"
 
         assert list(iter_clusters(thumb)) == [thumb]
 
     def test_zwj_sequence_is_one_cluster(self) -> None:
-        family = "\U0001F468‍\U0001F469‍\U0001F467"
+        family = "\U0001f468‍\U0001f469‍\U0001f467"
 
         assert list(iter_clusters(family)) == [family]
 
@@ -157,12 +155,12 @@ class TestGraphemeClusters:
         assert list(iter_clusters(heart)) == [heart]
 
     def test_regional_indicator_pair_is_one_cluster(self) -> None:
-        flag = "\U0001F1F7\U0001F1FA"
+        flag = "\U0001f1f7\U0001f1fa"
 
         assert list(iter_clusters(flag)) == [flag]
 
     def test_three_code_point_emoji_is_removed_whole(self) -> None:
-        emoji = "\U0001F44D\U0001F3FD️"
+        emoji = "\U0001f44d\U0001f3fd️"
         assert len(emoji) == 3, "эмодзи из трёх кодовых точек"
 
         cleaned, stats = filter_text(f"а{emoji}б", "builtin")
@@ -171,11 +169,11 @@ class TestGraphemeClusters:
         assert stats.removed_characters == 3
         assert stats.removed_clusters == 1
         assert "‍" not in cleaned
-        assert "\U0001F3FD" not in cleaned
+        assert "\U0001f3fd" not in cleaned
         assert "️" not in cleaned
 
     def test_zwj_family_is_removed_without_orphans(self) -> None:
-        family = "\U0001F468‍\U0001F469‍\U0001F467"
+        family = "\U0001f468‍\U0001f469‍\U0001f467"
 
         cleaned, stats = filter_text(f"начало {family} конец", "builtin")
 
@@ -184,7 +182,7 @@ class TestGraphemeClusters:
         assert stats.removed_clusters == 1
 
     def test_removed_count_is_in_characters_not_clusters(self) -> None:
-        cleaned, stats = filter_text("\U0001F300\U0001F301 ok", "builtin")
+        cleaned, stats = filter_text("\U0001f300\U0001f301 ok", "builtin")
 
         assert cleaned == " ok"
         assert stats.removed_clusters == 2
@@ -292,9 +290,12 @@ class TestReportAccounting:
 
         for _ in range(3):
             stats = filter_document(
-                {"type": "doc", "content": [{"type": "paragraph", "content": [
-                    {"type": "text", "text": "─" * 5}
-                ]}]},
+                {
+                    "type": "doc",
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "─" * 5}]}
+                    ],
+                },
                 "builtin",
             ).stats
             apply_to_report(report, stats)
@@ -365,9 +366,10 @@ class TestNoNamedEntities:
 
     def test_cyrillic_is_not_escaped(self) -> None:
         html = convert_document(
-            {"type": "doc", "content": [
-                {"type": "paragraph", "content": [{"type": "text", "text": "Привет"}]}
-            ]}
+            {
+                "type": "doc",
+                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Привет"}]}],
+            }
         ).html
 
         assert "Привет" in html

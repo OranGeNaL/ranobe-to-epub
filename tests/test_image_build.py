@@ -83,9 +83,7 @@ class TestCollectImageKeys:
                     "content": [
                         {
                             "type": "paragraph",
-                            "content": [
-                                {"type": "image", "attrs": {"images": [{"image": "a"}]}}
-                            ],
+                            "content": [{"type": "image", "attrs": {"images": [{"image": "a"}]}}],
                         }
                     ],
                 },
@@ -256,12 +254,8 @@ class TestEpubWithImages:
         )
         recorder = ReportRecorder(total_chapters=1)
         downloader = ChapterDownloader(source, recorder, max_image_mb=1e-9)
-        fetched = asyncio.run(
-            downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug")
-        )
-        book = Book(
-            slug_url="94231--x", rus_name="Книга", cover="/uploads/covers/c.png"
-        )
+        fetched = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
+        book = Book(slug_url="94231--x", rus_name="Книга", cover="/uploads/covers/c.png")
         cover = asyncio.run(downloader.fetch_cover(book))
 
         target = tmp_path / "book.epub"

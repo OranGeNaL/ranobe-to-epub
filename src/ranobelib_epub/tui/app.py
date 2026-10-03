@@ -18,13 +18,22 @@ from typing import ClassVar, cast
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Input, OptionList, ProgressBar, Static
+from textual.widgets import (
+    Button,
+    Collapsible,
+    Footer,
+    Input,
+    OptionList,
+    ProgressBar,
+    RichLog,
+    Static,
+)
 from textual.widgets.option_list import Option
 
 from ..cli.options import Options
 from ..models import Book, Chapter
 from ..pipeline.downloader import coverage_note
-from ..pipeline.report import Progress, ReportRecorder
+from ..pipeline.report import ChapterEvent, Progress, ReportRecorder
 from ..source.translations import available_teams, compute_coverage
 from ..source.url import InvalidBookUrlError, parse_book_url
 
@@ -71,6 +80,8 @@ class ExporterApp(App[None]):
     .actions Button { margin-right: 2; }
     #details_box { height: auto; }
     #report { height: 1fr; }
+    #log_panel { height: auto; }
+    #chapter_log { height: 12; }
     """
 
     BINDINGS: ClassVar = [("q", "quit", "Выход")]
@@ -192,8 +203,7 @@ class TranslationScreen(Screen[None]):
         teams = available_teams(app.metadata.chapters) if app.metadata else ()
         options = [_option(DEFAULT_OPTION, DEFAULT_LABEL)]
         options.extend(
-            _option(team.name, _team_label(team.name, team.covered, team.total))
-            for team in teams
+            _option(team.name, _team_label(team.name, team.covered, team.total)) for team in teams
         )
         option_list = self.query_one("#teams", OptionList)
         option_list.add_options(options)
@@ -279,6 +289,8 @@ class ConfirmScreen(Screen[None]):
 class ProgressScreen(Screen[None]):
     """Шаг 4: ход сборки, отдельный индикатор картинок (14.6, 14.7)."""
 
+    BINDINGS: ClassVar = [("l", "toggle_log", "Журнал")]
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("Сборка книги", id="prompt")
@@ -286,6 +298,8 @@ class ProgressScreen(Screen[None]):
             yield Static("", id="chapter_info")
             yield ProgressBar(total=100, id="images")
             yield Static("", id="images_info")
+            with Collapsible(title="Журнал глав", collapsed=True, id="log_panel"):
+                yield RichLog(id="chapter_log", max_lines=5000, auto_scroll=False)
             yield Static("", id="notices")
         yield Footer()
 
@@ -293,6 +307,11 @@ class ProgressScreen(Screen[None]):
         self.last: Progress = Progress()
         self.set_interval(0.05, self._drain)
         self.run_worker(self._run(), exclusive=True, name="build")
+
+    def action_toggle_log(self) -> None:
+        """Свернуть или развернуть панель журнала, не прерывая сборку (решение 5)."""
+        panel = self.query_one("#log_panel", Collapsible)
+        panel.collapsed = not panel.collapsed
 
     async def _run(self) -> None:
         app = cast(ExporterApp, self.app)
@@ -320,12 +339,8 @@ class ProgressScreen(Screen[None]):
         )
 
     def _drain(self) -> None:
-        updated = False
         while not self.app.progress_queue.empty():
-            self.last = self.app.progress_queue.get_nowait()
-            updated = True
-        if updated:
-            self._apply(self.last)
+            self._apply(self.app.progress_queue.get_nowait())
 
     def _apply(self, progress: Progress) -> None:
         self.last = progress
@@ -337,6 +352,12 @@ class ProgressScreen(Screen[None]):
         self.query_one("#images_info", Static).update(
             f"Изображения: {progress.images_done}/{progress.images_total or '?'}"
         )
+        if progress.last_event is not None:
+            self._write_event(progress.last_event)
+
+    def _write_event(self, event: ChapterEvent) -> None:
+        """Дописывает строку журнала, не прокручивая панель принудительно (решение 5)."""
+        self.query_one("#chapter_log", RichLog).write(event.render())
 
 
 class ReportScreen(Screen[None]):

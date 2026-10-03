@@ -10,10 +10,17 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from textual.widgets import Input, OptionList, ProgressBar, Static
+from textual.widgets import (
+    Collapsible,
+    Input,
+    OptionList,
+    ProgressBar,
+    RichLog,
+    Static,
+)
 
 from ranobelib_epub.models import Book, Chapter, TranslationBranch
-from ranobelib_epub.pipeline.report import Progress, ReportRecorder
+from ranobelib_epub.pipeline.report import ChapterEvent, Progress, ReportRecorder
 from ranobelib_epub.tui.app import (
     DEFAULT_OPTION,
     ConfirmScreen,
@@ -117,6 +124,45 @@ class GatedBuild:
         recorder = ReportRecorder(total_chapters=self.total)
         for _ in range(self.total):
             recorder.chapter_built()
+        recorder.finished("/tmp/book.epub", 2048)
+        return recorder
+
+
+class JournalBuild:
+    """Сборка с событиями глав: наполняет журнал, затем ждёт сигнала."""
+
+    def __init__(self, total: int = 5) -> None:
+        self.total = total
+        self.gate = asyncio.Event()
+
+    async def __call__(self, plan, on_progress, on_notice):
+        recorder = ReportRecorder(total_chapters=self.total)
+        for index in range(1, self.total + 1):
+            built = index != 2
+            chapter = plan.chapters[index - 1]
+            if built:
+                recorder.chapter_built()
+            else:
+                recorder.chapter_unavailable(chapter, "таймаут запроса")
+            event = ChapterEvent(
+                position=index,
+                total=self.total,
+                label=f"1.{index}",
+                name=f"Глава {index}",
+                built=built,
+                reason=None if built else "таймаут запроса",
+                images=1 if built else 0,
+            )
+            on_progress(
+                Progress(
+                    done=index if built else index - 1,
+                    total=self.total,
+                    elapsed=float(index),
+                    last_event=event,
+                )
+            )
+            await asyncio.sleep(0)
+        await self.gate.wait()
         recorder.finished("/tmp/book.epub", 2048)
         return recorder
 
@@ -259,9 +305,7 @@ class TestTranslationScreen:
 class TestProgressScreen:
     async def test_progress_and_images_update(self) -> None:
         build = GatedBuild(total=10, prompts=3)
-        app = ExporterApp(
-            load_metadata=loader(single_team_chapters()), build=build
-        )
+        app = ExporterApp(load_metadata=loader(single_team_chapters()), build=build)
 
         async with app.run_test(size=(80, 24)) as pilot:
             await enter_confirm(pilot, app)
@@ -274,9 +318,7 @@ class TestProgressScreen:
 
     async def test_slow_build_does_not_block_ui(self) -> None:
         build = GatedBuild(total=10, prompts=3)
-        app = ExporterApp(
-            load_metadata=loader(single_team_chapters()), build=build
-        )
+        app = ExporterApp(load_metadata=loader(single_team_chapters()), build=build)
         ticks = 0
 
         async with app.run_test() as pilot:
@@ -295,12 +337,74 @@ class TestProgressScreen:
             await pilot.pause()
             assert isinstance(app.screen, ReportScreen)
 
+    async def test_journal_panel_is_present_and_bounded(self) -> None:
+        build = GatedBuild(total=10, prompts=1)
+        app = ExporterApp(load_metadata=loader(single_team_chapters()), build=build)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await enter_confirm(pilot, app)
+            await pilot.pause(0.15)
+
+            assert isinstance(app.screen, ProgressScreen)
+            panel = app.screen.query_one("#log_panel", Collapsible)
+            log = app.screen.query_one("#chapter_log", RichLog)
+
+            assert panel.collapsed is True, "панель стартует свёрнутой"
+            assert log.max_lines is not None and log.max_lines <= 10_000
+            assert log.auto_scroll is False, "прокрутка не должна навязываться"
+
+            build.gate.set()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+    async def test_journal_panel_shows_chapter_messages(self) -> None:
+        build = JournalBuild(total=5)
+        app = ExporterApp(load_metadata=loader(single_team_chapters()), build=build)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await enter_confirm(pilot, app)
+            await pilot.pause(0.15)
+
+            assert isinstance(app.screen, ProgressScreen)
+            app.screen.action_toggle_log()
+            await pilot.pause(0.1)
+            log = app.screen.query_one("#chapter_log", RichLog)
+            text = "\n".join(str(line) for line in log.lines)
+
+            assert "1.1" in text and "собрана" in text
+            assert "1.2" in text and "пропущена" in text
+            assert "таймаут запроса" in text
+
+            build.gate.set()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert isinstance(app.screen, ReportScreen)
+
+    async def test_toggling_journal_does_not_interrupt_build(self) -> None:
+        build = GatedBuild(total=10, prompts=3)
+        app = ExporterApp(load_metadata=loader(single_team_chapters()), build=build)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await enter_confirm(pilot, app)
+            await pilot.pause(0.15)
+
+            assert isinstance(app.screen, ProgressScreen)
+            panel = app.screen.query_one("#log_panel", Collapsible)
+            assert panel.collapsed is True
+
+            await pilot.press("l")
+            await pilot.pause()
+            assert panel.collapsed is False, "биндинг разворачивает панель"
+
+            build.gate.set()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert isinstance(app.screen, ReportScreen), "сборка не прервалась переключением"
+
 
 class TestReportScreen:
     async def test_success_shows_path_and_size(self) -> None:
-        app = ExporterApp(
-            load_metadata=loader(single_team_chapters()), build=fast_build()
-        )
+        app = ExporterApp(load_metadata=loader(single_team_chapters()), build=fast_build())
 
         async with app.run_test() as pilot:
             await enter_confirm(pilot, app)
@@ -340,9 +444,7 @@ class TestReportScreen:
             assert "partial.epub" in str(app.screen.query_one("#save_status", Static).content)
 
     async def test_narrow_terminal_is_readable(self) -> None:
-        app = ExporterApp(
-            load_metadata=loader(multi_team_chapters()), build=fast_build()
-        )
+        app = ExporterApp(load_metadata=loader(multi_team_chapters()), build=fast_build())
 
         async with app.run_test(size=(80, 24)) as pilot:
             await submit_link(pilot, app)

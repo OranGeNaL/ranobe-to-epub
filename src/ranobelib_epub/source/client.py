@@ -173,6 +173,7 @@ class RanobeLibClient:
         """
         attempts = max(1, self.config.retries)
         last_error: Exception | None = None
+        last_status: int | None = None
 
         for attempt in range(1, attempts + 1):
             await self.rate_limiter.acquire()
@@ -184,18 +185,21 @@ class RanobeLibClient:
                 if response.status_code not in RETRY_STATUSES:
                     _raise_for_status(response, url)
                     return response.content
+                last_status = response.status_code
 
             if attempt < attempts:
                 await self._sleep(self.config.backoff * (2 ** (attempt - 1)))
 
         raise ApiUnavailableError(
             f"Не удалось скачать {url} после {attempts} попыток"
+            + _status_suffix(last_status)
             + (f": {last_error}" if last_error else "")
         )
 
     async def _request(self, path: str, params: dict[str, Any] | None) -> httpx.Response:
         attempts = max(1, self.config.retries)
         last_error: Exception | None = None
+        last_status: int | None = None
 
         for attempt in range(1, attempts + 1):
             await self.rate_limiter.acquire()
@@ -209,14 +213,21 @@ class RanobeLibClient:
                 if response.status_code not in RETRY_STATUSES:
                     _raise_for_status(response, path)
                     return response
+                last_status = response.status_code
 
             if attempt < attempts:
                 await self._sleep(self.config.backoff * (2 ** (attempt - 1)))
 
         raise ApiUnavailableError(
             f"Не удалось получить {path} после {attempts} попыток"
+            + _status_suffix(last_status)
             + (f": {last_error}" if last_error else "")
         )
+
+
+def _status_suffix(status: int | None) -> str:
+    """Дописывает к ошибке исчерпания повторов последний полученный статус."""
+    return f" (последний статус: {status})" if status is not None else ""
 
 
 def _raise_for_status(response: httpx.Response, path: str) -> None:

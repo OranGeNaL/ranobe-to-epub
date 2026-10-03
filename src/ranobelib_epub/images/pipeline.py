@@ -254,7 +254,7 @@ def assign_filenames(assets: list[ImageAsset]) -> list[ImageAsset]:
     return assets
 
 
-PLACEHOLDER_TEMPLATE = '[изображение недоступно: {url}]'
+PLACEHOLDER_TEMPLATE = "[изображение недоступно: {url}]"
 
 
 def placeholder(url: str) -> str:
@@ -266,9 +266,7 @@ def mark_missing(
     url: str, reason: str, chapter_label: str = "", reference: str = ""
 ) -> MissingImage:
     """Запись о недоступном изображении для отчёта (8.5)."""
-    return MissingImage(
-        chapter_label=chapter_label, reference=reference, url=url, reason=reason
-    )
+    return MissingImage(chapter_label=chapter_label, reference=reference, url=url, reason=reason)
 
 
 async def fetch_image(client: object, url: str) -> bytes:

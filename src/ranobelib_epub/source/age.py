@@ -62,8 +62,7 @@ def confirm_age(book: Book, report: Report | None = None) -> str:
     """
     label = restriction_label(book.age_restriction_id)
     message = (
-        f"возрастное ограничение «{label}» ({book.age_restriction_id}) "
-        "подтверждено автоматически"
+        f"возрастное ограничение «{label}» ({book.age_restriction_id}) подтверждено автоматически"
     )
 
     if report is not None:

@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
+import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from ranobelib_epub.cli.main import EXIT_BAD_ARGUMENT, EXIT_FAILED, EXIT_OK, Printer, main
+from ranobelib_epub.cli.main import (
+    EXIT_BAD_ARGUMENT,
+    EXIT_FAILED,
+    EXIT_OK,
+    Printer,
+    main,
+    progress_line,
+    run_build,
+)
 from ranobelib_epub.cli.options import (
     ArgumentError,
     Options,
@@ -19,8 +30,32 @@ from ranobelib_epub.cli.options import (
     parse_chapter_selection,
 )
 from ranobelib_epub.models import Book
+from ranobelib_epub.pipeline.report import ChapterEvent, Progress
 
 URL = "https://ranobelib.me/book/94231--rezero"
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def load(name: str) -> Any:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+class FixtureClient:
+    """Подделка клиента: отдаёт фикстуры по форме пути, без сети."""
+
+    def __init__(self) -> None:
+        self.paths: list[str] = []
+
+    async def get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        self.paths.append(path)
+        if path.endswith("/chapters"):
+            return load("chapters.json")
+        if path.endswith("/chapter"):
+            return load("chapter.json")
+        return load("book.json")
+
+    async def aclose(self) -> None:
+        return None
 
 
 class TestArguments:
@@ -262,6 +297,68 @@ class TestNonInteractiveOutput:
 
         assert "\n" not in text
         assert "5/10" in text
+
+
+class TestJournalOutput:
+    def test_event_line_preferred_over_aggregate(self) -> None:
+        event = ChapterEvent(position=3, total=20, label="1.3", name="Глава", built=True, images=1)
+        progress = Progress(done=3, total=20, elapsed=1.0, last_event=event)
+
+        assert progress_line(progress) == event.render()
+
+    def test_aggregate_used_without_event(self) -> None:
+        progress = Progress(done=3, total=20, elapsed=1.0)
+
+        assert progress_line(progress) == progress.render()
+
+    def test_unavailable_line_names_number_name_and_reason(self) -> None:
+        event = ChapterEvent(
+            position=2,
+            total=20,
+            label="1.2",
+            name="Глава",
+            built=False,
+            reason="таймаут запроса",
+        )
+
+        text = progress_line(Progress(done=1, total=20, last_event=event))
+
+        assert "1.2" in text
+        assert "Глава" in text
+        assert "таймаут запроса" in text
+
+    def test_quiet_printer_suppresses_journal_lines(self) -> None:
+        stream = io.StringIO()
+        printer = Printer(stream=stream, quiet=True)
+        event = ChapterEvent(position=1, total=1, label="1.1", name="Глава", built=True)
+
+        printer.line(progress_line(Progress(done=1, total=1, last_event=event)))
+
+        assert stream.getvalue() == ""
+
+    def test_no_tui_prints_one_line_per_chapter(self, tmp_path: Path) -> None:
+        options = parse_args(
+            [
+                URL,
+                "--no-tui",
+                "--no-images",
+                "--chapters",
+                "1-20",
+                "--output",
+                str(tmp_path / "book.epub"),
+            ]
+        )
+        stream = io.StringIO()
+        printer = Printer(stream=stream)
+
+        asyncio.run(run_build(options, printer, client=FixtureClient()))
+
+        journal = [line for line in stream.getvalue().splitlines() if line.startswith("[")]
+        assert len(journal) == 20, "по строке на каждую из 20 глав"
+        positions = [int(line.split("]")[0].lstrip("[").split("/")[0]) for line in journal]
+        assert positions == list(range(1, 21))
+        assert all("собрана" in line for line in journal)
+        assert (tmp_path / "book.epub").exists()
 
 
 class TestConsoleScript:
