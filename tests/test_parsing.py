@@ -188,6 +188,18 @@ class TestParseCovers:
         assert parse_covers("не список") == ()
         assert parse_covers({"data": [{"order": 0}]}) == (), "без id запись пропускается"
 
+    def test_numeric_info_formats_volume_label(self) -> None:
+        covers = parse_covers(
+            {
+                "data": [
+                    {"id": 1, "order": 0, "info": "1", "cover": {"thumbnail": "https://c/a.jpg"}},
+                    {"id": 2, "order": 1, "info": "3", "cover": {"thumbnail": "https://c/b.jpg"}},
+                ]
+            }
+        )
+
+        assert [cover.label for cover in covers] == ["Том 1", "Том 3"]
+
 
 class TestParseChapters:
     def test_all_chapters_in_one_response(self, chapters_payload: Any) -> None:

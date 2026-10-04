@@ -155,9 +155,9 @@ def _summary_text_parts(node: Any) -> list[str]:
 def parse_covers(payload: Any) -> tuple[Cover, ...]:
     """Список обложек карусели, упорядоченный по `order`.
 
-    Метка — `info`, при пустом значении — `Том {order + 1}`. Сломанные записи и ответы
-    без списка пропускаются: сборка не останавливается (требование «Карусель пуста или
-    недоступна»).
+    Метка — `info`; числовой номер тома («1») превращается в «Том 1», при пустом
+    значении — «Том {order + 1}`. Сломанные записи и ответы без списка пропускаются:
+    сборка не останавливается (требование «Карусель пуста или недоступна»).
     """
     raw = _data(payload)
     if not isinstance(raw, list):
@@ -170,11 +170,17 @@ def parse_covers(payload: Any) -> tuple[Cover, ...]:
             continue
         order = _as_int(data.get("order")) or 0
         info = _as_text(data.get("info"))
+        if not info:
+            label = f"Том {order + 1}"
+        elif info.isdigit():
+            label = f"Том {info}"
+        else:
+            label = info
         covers.append(
             Cover(
                 id=cover_id,
                 order=order,
-                label=info or f"Том {order + 1}",
+                label=label,
                 url=_cover_variant_url(data.get("cover")),
             )
         )
