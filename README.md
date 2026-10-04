@@ -3,77 +3,36 @@
 Выгрузка книг с `ranobelib.me` в **EPUB 3** с фильтрацией символов под читалки
 CrossPoint (диапазоны встроенного шрифта), сжатием иллюстраций и отчётом о потерях.
 
-## Возможности
-
-- Интерактивный TUI (выбор перевода, подтверждение, прогресс, отчёт) и
-  неинтерактивный режим для скриптов.
-- Выбор команды-переводчика с покрытием глав; непокрытые главы добираются из
-  актуальной ветки, их номера можно посмотреть заранее.
-- Автоматическое подтверждение метки `18+` (клиентская декларация возраста, не обход
-  авторизации).
-- Скачивание и сжатие иллюстраций в JPEG, обложка книги; одинаковые по содержимому
-  изображения встраиваются в архив один раз.
-- Приведение набора символов к профилю CrossPoint с удалением эмодзи и иных
-  неподдерживаемых кластеров целиком.
-- EPUB 3 с корректной иерархией номеров глав (`1.25`, `15.12`, `1.22.5`) и отчётом:
-  путь, размер, пропуски, число удалённых символов.
-
-## Требования
-
-- Python 3.14+ и [uv](https://docs.astral.sh/uv/).
-- Для самопроверки файла — Java 17+ и `epubcheck` (необязательно).
-
 ## Установка
 
-```bash
-uv sync
-```
+Установка в одну строку — без Python, uv и прав администратора. Скрипт сам
+определяет последнюю версию в [GitHub Releases](https://github.com/OranGeNaL/ranobe-to-epub/releases),
+скачивает бинарный файл под вашу платформу и проверяет его контрольную сумму
+SHA-256 по `checksums.txt` перед установкой.
 
-Запуск без установки в окружение:
-
-```bash
-uv run ranobelib-epub "<ссылка>"
-```
-
-## Готовые бинарные сборки
-
-Готовые исполняемые файлы публикуются в [GitHub Releases](https://github.com/OranGeNaL/ranobe-to-epub/releases).
-Такой файл не требует установки Python, uv и каких-либо пакетов — достаточно скачать
-файл под вашу платформу и запустить.
-
-| Платформа | Файл | Требования |
-| --- | --- | --- |
-| Linux x86_64 | `ranobelib-epub-linux-x86_64` | glibc 2.35+ (Ubuntu 22.04+, Debian 12+, RHEL 9+ и совместимые) |
-| macOS arm64 | `ranobelib-epub-macos-arm64` | macOS 15+ (Apple Silicon, Mac с 2020 года и новее) |
-| Windows x86_64 | `ranobelib-epub-windows-amd64.exe` | Windows 10/11 x64 |
-
-Сборок под macOS Intel в настоящее время нет из-за отсутствия доступных
-инструментов компиляции под эту архитектуру; на таких машинах используйте
-установку через uv выше.
-
-Запуск совпадает с обычным:
+macOS и Linux:
 
 ```bash
-# Linux/macOS
-./ranobelib-epub-linux-x86_64 "<ссылка>"
-
-# Windows
-ranobelib-epub-windows-amd64.exe "<ссылка>"
+curl -fsSL https://raw.githubusercontent.com/OranGeNaL/ranobe-to-epub/main/install.sh | sh
 ```
 
-### Проверка скачанного файла
+Windows (PowerShell):
 
-Вместе с бинарными файлами в Release лежит `checksums.txt` с контрольными суммами
-SHA-256. Проверить целостность скачанного файла можно так:
+```powershell
+irm https://raw.githubusercontent.com/OranGeNaL/ranobe-to-epub/main/install.ps1 | iex
+```
+
+Бинарный файл устанавливается в `~/.local/bin` (macOS/Linux) или
+`%LOCALAPPDATA%\Programs\ranobelib-epub` (Windows); путь можно переопределить
+переменной окружения `RANOBELIB_EPUB_INSTALL_DIR`. Если директория не в `PATH`,
+скрипт подскажет, как её добавить.
+
+Сборок под macOS Intel нет: на таких машинах скрипт сообщит об этом и предложит
+установку из исходников через uv (ниже). Перед запуском скрипт можно посмотреть:
 
 ```bash
-sha256sum -c checksums.txt   # Linux/macOS
-certutil -hashfile ranobelib-epub-windows-amd64.exe SHA256  # Windows
+curl -fsSL https://raw.githubusercontent.com/OranGeNaL/ranobe-to-epub/main/install.sh
 ```
-
-На Windows одно из предупреждений — «Неизвестный издатель» от SmartScreen: бинарные
-файлы не подписаны сертификатом. Это ожидаемо для этой сборки; перед запуском
-файла сверьте его контрольную сумму, следуя инструкции выше.
 
 ## Использование
 
@@ -82,20 +41,20 @@ certutil -hashfile ranobelib-epub-windows-amd64.exe SHA256  # Windows
 явно:
 
 ```bash
-uv run ranobelib-epub "<ссылка>" --no-tui
+ranobelib-epub "<ссылка>" --no-tui
 ```
 
 Примеры:
 
 ```bash
 # ссылка на книгу или её slug_url
-uv run ranobelib-epub "https://ranobelib.me/ru/book/94231--rezero"
+ranobelib-epub "https://ranobelib.me/ru/book/94231--rezero"
 
 # только первые 20 глав, конкретный перевод, свой файл
-uv run ranobelib-epub "<ссылка>" --chapters 1-20 --team "Re:Zero | Элиор" --output book.epub
+ranobelib-epub "<ссылка>" --chapters 1-20 --team "Re:Zero | Элиор" --output book.epub
 
 # без иллюстраций и без сжатия
-uv run ranobelib-epub "<ссылка>" --no-images --max-image-mb 0
+ranobelib-epub "<ссылка>" --no-images --max-image-mb 0
 ```
 
 ### Параметры
@@ -140,16 +99,16 @@ uv run ranobelib-epub "<ссылка>" --no-images --max-image-mb 0
 
 ```bash
 # какие обложки есть у книги
-uv run ranobelib-epub "<ссылка>" --list-covers
+ranobelib-epub "<ссылка>" --list-covers
 
 # собрать с обложкой третьего тома (id из --list-covers)
-uv run ranobelib-epub "<ссылка>" --cover 18021735
+ranobelib-epub "<ссылка>" --cover 18021735
 
 # без обложки вообще
-uv run ranobelib-epub "<ссылка>" --no-cover
+ranobelib-epub "<ссылка>" --no-cover
 
 # переопределить название, автора, язык и серию
-uv run ranobelib-epub "<ссылка>" --title "Новое заглавие" --author "Имя автора" --language ru --series "Серия" --series-index 3
+ranobelib-epub "<ссылка>" --title "Новое заглавие" --author "Имя автора" --language ru --series "Серия" --series-index 3
 ```
 
 ### Пресеты сжатия
@@ -167,10 +126,10 @@ uv run ranobelib-epub "<ссылка>" --title "Новое заглавие" --a
 
 ```bash
 # пресет под e-ink ридер
-uv run ranobelib-epub "<ссылка>" --preset crosspoint
+ranobelib-epub "<ссылка>" --preset crosspoint
 
 # ручная настройка (без --preset)
-uv run ranobelib-epub "<ссылка>" --max-image-width 900 --quality 70
+ranobelib-epub "<ссылка>" --max-image-width 900 --quality 70
 ```
 
 ### Профили `--charset`
@@ -200,11 +159,89 @@ uv run ranobelib-epub "<ссылка>" --max-image-width 900 --quality 70
 - `1` — сбой сборки (сеть, книга не найдена, прерывание).
 - `2` — некорректный параметр.
 
+## Возможности
+
+- Интерактивный TUI (выбор перевода, подтверждение, прогресс, отчёт) и
+  неинтерактивный режим для скриптов.
+- Выбор команды-переводчика с покрытием глав; непокрытые главы добираются из
+  актуальной ветки, их номера можно посмотреть заранее.
+- Автоматическое подтверждение метки `18+` (клиентская декларация возраста, не обход
+  авторизации).
+- Скачивание и сжатие иллюстраций в JPEG, обложка книги; одинаковые по содержимому
+  изображения встраиваются в архив один раз.
+- Приведение набора символов к профилю CrossPoint с удалением эмодзи и иных
+  неподдерживаемых кластеров целиком.
+- EPUB 3 с корректной иерархией номеров глав (`1.25`, `15.12`, `1.22.5`) и отчётом:
+  путь, размер, пропуски, число удалённых символов.
+
+## Требования
+
+- Python 3.14+ и [uv](https://docs.astral.sh/uv/).
+- Для самопроверки файла — Java 17+ и `epubcheck` (необязательно).
+
+## Готовые бинарные сборки
+
+Готовые исполняемые файлы публикуются в [GitHub Releases](https://github.com/OranGeNaL/ranobe-to-epub/releases).
+Такой файл не требует установки Python, uv и каких-либо пакетов — достаточно скачать
+файл под вашу платформу и запустить.
+
+| Платформа | Файл | Требования |
+| --- | --- | --- |
+| Linux x86_64 | `ranobelib-epub-linux-x86_64` | glibc 2.35+ (Ubuntu 22.04+, Debian 12+, RHEL 9+ и совместимые) |
+| macOS arm64 | `ranobelib-epub-macos-arm64` | macOS 15+ (Apple Silicon, Mac с 2020 года и новее) |
+| Windows x86_64 | `ranobelib-epub-windows-amd64.exe` | Windows 10/11 x64 |
+
+Сборок под macOS Intel в настоящее время нет из-за отсутствия доступных
+инструментов компиляции под эту архитектуру; на таких машинах используйте
+установку через uv ниже.
+
+Запуск совпадает с обычным:
+
+```bash
+# Linux/macOS
+./ranobelib-epub-linux-x86_64 "<ссылка>"
+
+# Windows
+ranobelib-epub-windows-amd64.exe "<ссылка>"
+```
+
+### Проверка скачанного файла
+
+Вместе с бинарными файлами в Release лежит `checksums.txt` с контрольными суммами
+SHA-256. Проверить целостность скачанного файла можно так:
+
+```bash
+sha256sum -c checksums.txt   # Linux/macOS
+certutil -hashfile ranobelib-epub-windows-amd64.exe SHA256  # Windows
+```
+
+На Windows одно из предупреждений — «Неизвестный издатель» от SmartScreen: бинарные
+файлы не подписаны сертификатом. Это ожидаемо для этой сборки; перед запуском
+файла сверьте его контрольную сумму, следуя инструкции выше.
+
 ## Отказ от гарантий
 
 API `ranobelib.me` не документирован и может измениться в любой момент; совместимость
 не гарантируется. Утилита предназначена только для личного чтения и не заменяет
 поддержку авторов и переводчиков. Соблюдайте условия использования сайта.
+
+## Установка из исходников (uv)
+
+Для запуска из исходного кода нужны Python 3.14+ и
+[uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync
+```
+
+Запуск без установки в окружение:
+
+```bash
+uv run ranobelib-epub "<ссылка>"
+```
+
+Этот способ подходит, в частности, для macOS Intel и Linux arm64, для которых
+готовых бинарных сборок нет.
 
 ## Разработка
 
