@@ -1,6 +1,6 @@
 [project]
 name = "ranobelib-epub"
-version = "0.5.0"
+version = "0.6.0"
 description = "Выгрузка книг с ranobelib.me в EPUB 3 с фильтрацией символов под CrossPoint"
 readme = "README.md"
 requires-python = ">=3.14"
