@@ -150,24 +150,78 @@ class TestArguments:
 
 class TestChapterSelection:
     def test_range(self) -> None:
-        _, _, indexes = parse_chapter_selection("1-50")
+        _, _, indexes, _ = parse_chapter_selection("1-50")
 
         assert indexes == frozenset(range(1, 51))
 
     def test_list(self) -> None:
-        _, _, indexes = parse_chapter_selection("1,3,5")
+        _, _, indexes, _ = parse_chapter_selection("1,3,5")
 
         assert indexes == frozenset({1, 3, 5})
 
     def test_mixed_list(self) -> None:
-        _, _, indexes = parse_chapter_selection("1-3,7,10-12")
+        _, _, indexes, _ = parse_chapter_selection("1-3,7,10-12")
 
         assert indexes == frozenset({1, 2, 3, 7, 10, 11, 12})
 
     def test_volume(self) -> None:
-        _, volumes, _ = parse_chapter_selection("v2")
+        _, volumes, _, _ = parse_chapter_selection("v2")
 
         assert volumes == frozenset({2})
+
+    def test_volume_range(self) -> None:
+        _, volumes, _, _ = parse_chapter_selection("v2-3")
+
+        assert volumes == frozenset({2, 3})
+
+    def test_wide_volume_range(self) -> None:
+        _, volumes, _, _ = parse_chapter_selection("v4-9")
+
+        assert volumes == frozenset({4, 5, 6, 7, 8, 9})
+
+    def test_open_volume_range(self) -> None:
+        _, volumes, _, volume_min = parse_chapter_selection("v44-")
+
+        assert volumes == frozenset()
+        assert volume_min == 44
+
+    def test_mixed_volume_and_chapter_selection(self) -> None:
+        _, volumes, indexes, _ = parse_chapter_selection("1-3,v2-2")
+
+        assert volumes == frozenset({2})
+        assert indexes == frozenset({1, 2, 3})
+
+    def test_invalid_volume_range_rejected(self) -> None:
+        with pytest.raises(ArgumentError, match="диапазон"):
+            parse_chapter_selection("v3-2")
+        with pytest.raises(ArgumentError, match="диапазон томов"):
+            parse_chapter_selection("vx-2")
+
+    def test_invalid_open_volume_range_rejected(self) -> None:
+        with pytest.raises(ArgumentError, match="диапазон томов"):
+            parse_chapter_selection("vx-")
+
+    def test_selection_applies_volume_range(self) -> None:
+        options = parse_args([URL, "--chapters", "v2-3"])
+        chapters = [
+            Chapter(id=index, volume=volume, number=str(index), name="n", label=f"{volume}.{index}")
+            for index, volume in enumerate([1, 2, 2, 3, 4], start=1)
+        ]
+
+        selected = options.selection.apply(chapters)
+
+        assert [c.volume for c in selected] == [2, 2, 3]
+
+    def test_selection_applies_open_volume_range(self) -> None:
+        options = parse_args([URL, "--chapters", "v2-"])
+        chapters = [
+            Chapter(id=index, volume=volume, number=str(index), name="n", label=f"{volume}.{index}")
+            for index, volume in enumerate([1, 2, 3, 4], start=1)
+        ]
+
+        selected = options.selection.apply(chapters)
+
+        assert [c.volume for c in selected] == [2, 3, 4]
 
     def test_backwards_range_rejected(self) -> None:
         with pytest.raises(ArgumentError, match="конец диапазона"):

@@ -395,17 +395,24 @@ class StreamingWriter:
 
 @dataclass(slots=True)
 class ChapterSelector:
-    """Выборка глав из `--chapters` (задача 13.2)."""
+    """Выборка глав из `--chapters` (задача 13.2).
+
+    Тома выбираются по множеству `volumes` либо открытым нижним порогом `volume_min`
+    (синтаксис `v44-` — «том 44 и все последующие»).
+    """
 
     labels: frozenset[str] = frozenset()
     volumes: frozenset[int] = frozenset()
     indexes: frozenset[int] = frozenset()
+    volume_min: int | None = None
 
     def matches(self, chapter: Chapter, index: int) -> bool:
         """Пустая выборка означает «все главы»."""
-        if not (self.labels or self.volumes or self.indexes):
+        if not (self.labels or self.volumes or self.indexes or self.volume_min is not None):
             return True
         if self.volumes and chapter.volume in self.volumes:
+            return True
+        if self.volume_min is not None and chapter.volume >= self.volume_min:
             return True
         return bool(self.indexes and index in self.indexes) or bool(
             self.labels and chapter.label and chapter.label in self.labels

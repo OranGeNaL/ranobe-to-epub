@@ -220,6 +220,18 @@ async def enter_confirm(pilot, app: ExporterApp) -> None:
 
 
 class TestLinkScreen:
+    async def test_link_is_prefilled_from_options(self) -> None:
+        from ranobelib_epub.cli.options import parse_args
+
+        options = parse_args([LINK])
+        app = ExporterApp(load_metadata=loader(single_team_chapters()), options=options)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert isinstance(app.screen, LinkScreen)
+            assert app.screen.query_one("#link", Input).value == LINK
+
     async def test_invalid_link_shows_error_and_stays(self) -> None:
         app = ExporterApp(load_metadata=loader(multi_team_chapters()))
 

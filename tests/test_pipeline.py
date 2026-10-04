@@ -693,6 +693,16 @@ class TestChapterSelector:
 
         assert [c.id for c in selector.apply(self._chapters())] == [2, 5]
 
+    def test_volume_min_selector(self) -> None:
+        selector = ChapterSelector(volume_min=2)
+
+        assert [c.volume for c in selector.apply(self._chapters())] == [2] * 7
+
+    def test_empty_selector_with_volume_min_keeps_nothing(self) -> None:
+        selector = ChapterSelector(volume_min=5)
+
+        assert selector.apply(self._chapters()) == []
+
 
 class TestCoverageNote:
     def test_partial_coverage_is_stated_with_numbers(self) -> None:

@@ -199,7 +199,11 @@ class LinkScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#link", Input).focus()
+        link = self.query_one("#link", Input)
+        preset = cast(ExporterApp, self.app).options.slug_url or ""
+        if preset:
+            link.value = preset
+        link.focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self._submit()

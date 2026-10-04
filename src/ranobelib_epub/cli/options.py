@@ -125,22 +125,46 @@ def _validate(namespace: argparse.Namespace) -> None:
     charset_profile(namespace.charset)
 
 
-def parse_chapter_selection(value: str) -> tuple[frozenset[str], frozenset[int], frozenset[int]]:
+def parse_chapter_selection(
+    value: str,
+) -> tuple[frozenset[str], frozenset[int], frozenset[int], int | None]:
     """Разбор `--chapters`: диапазоны `1-50`, списки `1,3,5`, номера томов `v2`.
 
-    Поддерживаются смешанные списки: `1-3,7,10-12`. Возвращается тройка
-    (метки, тома, порядковые номера) — её же понимает `ChapterSelector`.
+    Тома задаются номером `v2`, диапазоном томов `v2-3` или открытым хвостом `v44-`
+    («том 44 и все последующие»). Поддерживаются смешанные списки: `1-3,7,10-12,v2-4`.
+    Возвращается четвёрка (метки, тома, порядковые номера, нижняя граница томов) —
+    её же понимает `ChapterSelector`.
     """
     labels: set[str] = set()
     volumes: set[int] = set()
     indexes: set[int] = set()
+    volume_min: int | None = None
 
     for chunk in (part.strip() for part in value.split(",")):
         if not chunk:
             continue
-        if chunk.startswith("v") and chunk[1:].isdigit():
-            volumes.add(int(chunk[1:]))
-            continue
+        if chunk.startswith("v"):
+            body = chunk[1:]
+            if body.endswith("-"):
+                start_text = body[:-1]
+                if not start_text.isdigit():
+                    raise ArgumentError(f"некорректный диапазон томов: «{chunk}»")
+                start = int(start_text)
+                volume_min = start if volume_min is None else min(volume_min, start)
+                continue
+            if "-" in body:
+                start_text, _, end_text = body.partition("-")
+                if not start_text.isdigit() or not end_text.isdigit():
+                    raise ArgumentError(f"некорректный диапазон томов: «{chunk}»")
+                start, end = int(start_text), int(end_text)
+                if end < start:
+                    raise ArgumentError(f"конец диапазона томов меньше начала: «{chunk}»")
+                volumes.update(range(start, end + 1))
+                continue
+            if body.isdigit():
+                volumes.add(int(body))
+                continue
+            raise ArgumentError(f"некорректный номер тома: «{chunk}»")
         if "-" in chunk:
             start_text, _, end_text = chunk.partition("-")
             if not start_text.isdigit() or not end_text.isdigit():
@@ -154,9 +178,9 @@ def parse_chapter_selection(value: str) -> tuple[frozenset[str], frozenset[int],
             raise ArgumentError(f"некорректный номер главы: «{chunk}»")
         indexes.add(int(chunk))
 
-    if not (labels or volumes or indexes):
+    if not (labels or volumes or indexes or volume_min is not None):
         raise ArgumentError("пустой список глав")
-    return frozenset(labels), frozenset(volumes), frozenset(indexes)
+    return frozenset(labels), frozenset(volumes), frozenset(indexes), volume_min
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,10 +238,15 @@ class Options:
         """Выборка глав из `--chapters`; None, если параметр не задан."""
         if self.chapters is None:
             return None
-        labels, volumes, indexes = parse_chapter_selection(self.chapters)
+        labels, volumes, indexes, volume_min = parse_chapter_selection(self.chapters)
         from ..pipeline.downloader import ChapterSelector
 
-        return ChapterSelector(labels=labels, volumes=volumes, indexes=indexes)
+        return ChapterSelector(
+            labels=labels,
+            volumes=volumes,
+            indexes=indexes,
+            volume_min=volume_min,
+        )
 
     def output_path_for(self, book: Book) -> Path:
         """Итоговый путь: `--output` или имя из названия книги (13.5)."""
