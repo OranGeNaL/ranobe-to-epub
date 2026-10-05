@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..models import Chapter, TranslationBranch
+from .models import Chapter, TranslationBranch
 
 #: Команда не выбрана явно — берётся актуальная ветка каждой главы (решение 7).
 DEFAULT_TRANSLATION: str | None = None

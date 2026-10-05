@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from ranobelib_epub.source.url import InvalidBookUrlError, parse_book_id, parse_book_url
+from ranobelib_epub.sources.ranobelib.url import InvalidBookUrlError, parse_book_id, parse_book_url
 
 SLUG = "94231--rezero-kara-hajimeru-isekai-seikatsu-outo-no-ichinichi-hen"
 

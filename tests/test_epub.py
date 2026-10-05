@@ -36,8 +36,8 @@ from ranobelib_epub.epub.parts import (
     toc_ncx,
 )
 from ranobelib_epub.models import Book, Chapter, MetadataOverrides, apply_overrides
-from ranobelib_epub.source.numbering import assign_labels, sort_chapters
-from ranobelib_epub.source.parsing import parse_chapters
+from ranobelib_epub.numbering import assign_labels, sort_chapters
+from ranobelib_epub.sources.ranobelib.parsing import parse_chapters
 
 FIXTURES = Path(__file__).parent / "fixtures"
 OPF_TEXT_DIR = "TEXT"

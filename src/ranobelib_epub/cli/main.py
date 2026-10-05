@@ -17,26 +17,24 @@ from pathlib import Path
 
 from ..images.pipeline import ImageAsset
 from ..models import Book, Chapter, Cover, apply_overrides, resolve_cover_url
+from ..numbering import assign_labels, sort_chapters
 from ..pipeline.downloader import (
     ChapterDownloader,
     ChapterTask,
 )
 from ..pipeline.report import Progress, ReportRecorder
-from ..source.age import confirm_age, requires_confirmation
-from ..source.api import RanobeLibSource
-from ..source.client import (
-    ApiError,
-    BookNotFoundError,
-    ClientConfig,
-    RanobeLibClient,
+from ..sources import (
+    BookSource,
+    SourceConfig,
+    SourceError,
+    create_source,
 )
-from ..source.numbering import assign_labels, sort_chapters
-from ..source.translations import (
+from ..sources.base import NotFoundError
+from ..translations import (
     apply_selection,
     available_teams,
     compute_coverage,
 )
-from ..source.url import parse_book_url
 from .options import ArgumentError, Options, apply_chapter_selection, parse_args
 
 EXIT_OK = 0
@@ -70,8 +68,8 @@ class Printer:
         print(f"Ошибка: {text}", file=sys.stderr, flush=True)
 
 
-def build_config(options: Options) -> ClientConfig:
-    return ClientConfig(rate_limit=options.rate_limit, retries=options.retries)
+def build_config(options: Options) -> SourceConfig:
+    return SourceConfig(rate_limit=options.rate_limit, retries=options.retries)
 
 
 def progress_line(progress: Progress) -> str:
@@ -88,8 +86,8 @@ def journal_line(printer: Printer, progress: Progress) -> None:
 
 
 async def collect(
-    source: RanobeLibSource,
-    slug: str,
+    source: BookSource,
+    ref: str,
     recorder: ReportRecorder,
     printer: Printer,
 ) -> tuple[Book, list[Chapter]]:
@@ -98,13 +96,13 @@ async def collect(
     Выборка глав здесь не применяется: её задаёт пользователь (в том числе в TUI),
     поэтому она учитывается перед формированием задач в `run_build` (задача 2.2).
     """
-    book = await source.fetch_book(slug)
-    chapters = await source.fetch_chapters(slug)
+    book = await source.fetch_book(ref)
+    chapters = await source.fetch_chapters(ref)
     assign_labels(chapters)
     chapters = sort_chapters(chapters)
 
-    if requires_confirmation(book):
-        message = confirm_age(book, recorder.report)
+    if source.requires_age_confirmation(book):
+        message = source.confirm_age(book, recorder.report)
         printer.line(f"{book.rus_name or book.name}: {message}")
 
     return book, chapters
@@ -113,20 +111,19 @@ async def collect(
 async def run_build(
     options: Options,
     printer: Printer,
-    client: RanobeLibClient | None = None,
+    source: BookSource | None = None,
 ) -> BuildOutcome:
     """Полная сборка: сеть → фильтр → конвертация → EPUB → отчёт."""
     if not options.slug_url:
         raise ArgumentError("не указана ссылка на книгу")
 
-    slug = parse_book_url(options.slug_url)
-    owns_client = client is None
-    active = client or RanobeLibClient(build_config(options))
+    owns_source = source is None
+    active = source or create_source(options.slug_url, build_config(options))
     recorder = ReportRecorder()
 
     try:
-        source = RanobeLibSource(active)
-        book, chapters = await collect(source, slug, recorder, printer)
+        ref = active.parse_url(options.slug_url)
+        book, chapters = await collect(active, ref, recorder, printer)
 
         chapters = apply_chapter_selection(options, chapters)
         apply_selection(chapters, options.team)
@@ -142,7 +139,7 @@ async def run_build(
 
         covers: tuple[Cover, ...] = ()
         if options.cover_id is not None:
-            covers = await source.fetch_covers(slug)
+            covers = await active.fetch_covers(ref)
         cover_url = resolve_cover_url(book, covers, options.cover_id, options.cover_disabled)
         if options.cover_id is not None:
             chosen = next((item for item in covers if item.id == options.cover_id), None)
@@ -157,7 +154,7 @@ async def run_build(
         )
 
         downloader = ChapterDownloader(
-            source,
+            active,
             recorder,
             on_progress=lambda progress: journal_line(printer, progress),
             max_image_mb=options.max_image_mb,
@@ -170,7 +167,7 @@ async def run_build(
             ChapterTask(chapter, charset=options.charset, include_images=options.include_images)
             for chapter in chapters
         ]
-        fetched = await downloader.fetch_all(tasks, book_slug=slug)
+        fetched = await downloader.fetch_all(tasks, book_ref=ref)
 
         target = options.output_path_for(effective_book)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -193,7 +190,7 @@ async def run_build(
             chapters_total=len(chapters),
         )
     finally:
-        if owns_client:
+        if owns_source:
             await active.aclose()
 
 
@@ -249,21 +246,20 @@ def should_use_tui(options: Options) -> bool:
 async def list_covers_flow(
     options: Options,
     printer: Printer,
-    client: RanobeLibClient | None = None,
+    source: BookSource | None = None,
 ) -> None:
     """`--list-covers`: показывает обложки карусели и завершается без сборки (задача 5.2)."""
     if not options.slug_url:
         raise ArgumentError("не указана ссылка на книгу")
 
-    slug = parse_book_url(options.slug_url)
-    owns_client = client is None
-    active = client or RanobeLibClient(build_config(options))
+    owns_source = source is None
+    active = source or create_source(options.slug_url, build_config(options))
     try:
-        source = RanobeLibSource(active)
-        book = await source.fetch_book(slug)
-        covers = await source.fetch_covers(slug)
+        ref = active.parse_url(options.slug_url)
+        book = await active.fetch_book(ref)
+        covers = await active.fetch_covers(ref)
     finally:
-        if owns_client:
+        if owns_source:
             await active.aclose()
 
     printer.line(f"Книга: {book.title}")
@@ -312,10 +308,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if options.list_covers:
         try:
             asyncio.run(list_covers_flow(options, printer))
-        except BookNotFoundError as error:
+        except NotFoundError as error:
             printer.error(f"книга не найдена: {error}")
             return EXIT_FAILED
-        except (ApiError, ArgumentError) as error:
+        except (SourceError, ArgumentError) as error:
             printer.error(str(error))
             return EXIT_FAILED
         return EXIT_OK
@@ -325,10 +321,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         outcome = asyncio.run(run_build(options, printer))
-    except BookNotFoundError as error:
+    except NotFoundError as error:
         printer.error(f"книга не найдена: {error}")
         return EXIT_FAILED
-    except (ApiError, ArgumentError) as error:
+    except (SourceError, ArgumentError) as error:
         printer.error(str(error))
         return EXIT_FAILED
     except KeyboardInterrupt:

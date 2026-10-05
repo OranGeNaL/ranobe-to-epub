@@ -15,7 +15,7 @@ site 3 всегда `false`.
 
 from __future__ import annotations
 
-from ..models import Book, Report
+from ...models import Book, Report
 
 #: Уровни ограничения из `/constants?fields[]=ageRestriction`.
 AGE_RESTRICTIONS: dict[int, str] = {

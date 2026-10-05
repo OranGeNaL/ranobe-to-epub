@@ -40,6 +40,7 @@ from ranobelib_epub.cli.options import (
 )
 from ranobelib_epub.models import Book, Chapter, MetadataOverrides, apply_overrides
 from ranobelib_epub.pipeline.report import ChapterEvent, Progress
+from ranobelib_epub.sources.ranobelib.api import RanobeLibSource
 
 URL = "https://ranobelib.me/book/94231--rezero"
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -67,6 +68,14 @@ class FixtureClient:
 
     async def aclose(self) -> None:
         return None
+
+
+def _fixture_source() -> RanobeLibSource:
+    return RanobeLibSource(FixtureClient())
+
+
+async def _fixture_build(options: Options) -> None:
+    await run_build(options, Printer(stream=io.StringIO()), source=_fixture_source())
 
 
 class TestArguments:
@@ -421,14 +430,12 @@ class TestExitCodes:
         assert "ссылка" in capsys.readouterr().err
 
     def test_build_failure_returns_one(self, monkeypatch, capsys) -> None:
-        from ranobelib_epub.source.client import ApiUnavailableError
+        from ranobelib_epub.sources.ranobelib.client import ApiUnavailableError
 
         def boom(*args, **kwargs):
             raise ApiUnavailableError("сеть недоступна")
 
-        main_module = sys.modules["ranobelib_epub.cli.main"]
-
-        monkeypatch.setattr(main_module, "RanobeLibClient", boom)
+        monkeypatch.setattr("ranobelib_epub.sources.ranobelib.api.RanobeLibClient", boom)
 
         code = main([URL, "--no-tui"])
 
@@ -436,7 +443,7 @@ class TestExitCodes:
         assert "сеть недоступна" in capsys.readouterr().err
 
     def test_unknown_book_returns_one(self, monkeypatch, capsys) -> None:
-        from ranobelib_epub.source.client import BookNotFoundError
+        from ranobelib_epub.sources.ranobelib.client import BookNotFoundError
 
         class FailingClient:
             def __init__(self, *args, **kwargs) -> None:
@@ -448,9 +455,9 @@ class TestExitCodes:
             async def aclose(self) -> None:
                 pass
 
-        main_module = sys.modules["ranobelib_epub.cli.main"]
-
-        monkeypatch.setattr(main_module, "RanobeLibClient", FailingClient)
+        monkeypatch.setattr(
+            "ranobelib_epub.sources.ranobelib.api.RanobeLibClient", FailingClient
+        )
 
         code = main([URL, "--no-tui"])
 
@@ -544,7 +551,7 @@ class TestJournalOutput:
         stream = io.StringIO()
         printer = Printer(stream=stream)
 
-        asyncio.run(run_build(options, printer, client=FixtureClient()))
+        asyncio.run(run_build(options, printer, source=RanobeLibSource(FixtureClient())))
 
         journal = [line for line in stream.getvalue().splitlines() if line.startswith("[")]
         assert len(journal) == 20, "по строке на каждую из 20 глав"
@@ -646,7 +653,7 @@ class TestCompressionPresets:
             def __init__(self, *args, **kwargs) -> None:
                 captured.update(kwargs)
 
-            async def fetch_all(self, tasks, book_slug):
+            async def fetch_all(self, tasks, book_ref):
                 return []
 
             async def fetch_cover(self, book):
@@ -669,7 +676,7 @@ class TestCompressionPresets:
             ]
         )
 
-        asyncio.run(run_build(options, Printer(stream=io.StringIO()), client=FixtureClient()))
+        asyncio.run(_fixture_build(options))
 
         assert captured["grayscale"] is True
         assert captured["max_image_width"] == 480
@@ -684,8 +691,13 @@ class TestCompressionPresets:
         png = _png_bytes()
 
         class StubSource:
+            name = "stub"
+
             def __init__(self, client) -> None:
                 self.client = client
+
+            def parse_url(self, url):
+                return "slug"
 
             async def fetch_book(self, slug):
                 return Book(slug_url=URL, rus_name="Книга", name="Книга")
@@ -694,6 +706,9 @@ class TestCompressionPresets:
                 return [
                     Chapter(id=1, volume=1, number="1", name="Глава", label="1.1", branch_id=7)
                 ]
+
+            async def fetch_covers(self, slug):
+                return ()
 
             async def fetch_chapter_content(self, slug, chapter, branch_id):
                 return ChapterContent(
@@ -708,18 +723,45 @@ class TestCompressionPresets:
                     branch_id=7,
                 )
 
+            def resource_url(self, url):
+                return url
+
+            async def fetch_resource(self, url):
+                return await self.client.get_bytes(url)
+
+            def chapter_unavailable_reason(self, chapter):
+                return None
+
+            def describe_failure(self, error, *, ref=""):
+                return str(error)
+
+            def is_authorization_error(self, error):
+                return False
+
+            def requires_age_confirmation(self, book):
+                return False
+
+            def confirm_age(self, book, report=None):
+                return ""
+
+            async def aclose(self):
+                return None
+
         class ByteClient(FixtureClient):
             async def get_bytes(self, url: str, headers: dict | None = None) -> bytes:
                 return png
 
         main_module = sys.modules["ranobelib_epub.cli.main"]
 
-        monkeypatch.setattr(main_module, "RanobeLibSource", StubSource)
         monkeypatch.setattr(main_module, "apply_selection", lambda chapters, team: chapters)
 
         target = tmp_path / "book.epub"
         options = parse_args([URL, "--no-tui", "--preset", "crosspoint", "--output", str(target)])
-        asyncio.run(run_build(options, Printer(stream=io.StringIO()), client=ByteClient()))
+        asyncio.run(
+            run_build(
+                options, Printer(stream=io.StringIO()), source=StubSource(ByteClient())
+            )
+        )
 
         with zipfile.ZipFile(target) as archive:
             image_name = next(n for n in archive.namelist() if n.startswith("EPUB/Images/"))
@@ -833,7 +875,9 @@ class TestListCovers:
         stream = io.StringIO()
         options = parse_args([URL])
 
-        asyncio.run(list_covers_flow(options, Printer(stream=stream), client=FixtureClient()))
+        asyncio.run(
+            list_covers_flow(options, Printer(stream=stream), source=_fixture_source())
+        )
 
         text = stream.getvalue()
         assert "Re:Zero" in text
@@ -851,7 +895,9 @@ class TestListCovers:
         options = parse_args([URL])
 
         asyncio.run(
-            list_covers_flow(options, Printer(stream=stream), client=NoCoversClient())
+            list_covers_flow(
+                options, Printer(stream=stream), source=RanobeLibSource(NoCoversClient())
+            )
         )
 
         assert "Доступных обложек нет" in stream.getvalue()
@@ -871,7 +917,7 @@ class TestRunBuildWithMetadata:
             def __init__(self, *args, **kwargs) -> None:
                 pass
 
-            async def fetch_all(self, tasks, book_slug):
+            async def fetch_all(self, tasks, book_ref):
                 return []
 
             async def fetch_cover(self, cover_url):
@@ -914,7 +960,7 @@ class TestRunBuildWithMetadata:
                 str(tmp_path / "b.epub"),
             ]
         )
-        asyncio.run(run_build(options, Printer(stream=io.StringIO()), client=FixtureClient()))
+        asyncio.run(_fixture_build(options))
 
         book = captured["book"]
         assert book.title == "Новое заглавие"
@@ -933,7 +979,7 @@ class TestRunBuildWithMetadata:
             def __init__(self, *args, **kwargs) -> None:
                 pass
 
-            async def fetch_all(self, tasks, book_slug):
+            async def fetch_all(self, tasks, book_ref):
                 return []
 
             async def fetch_cover(self, cover_url):
@@ -955,7 +1001,7 @@ class TestRunBuildWithMetadata:
                 str(tmp_path / "b.epub"),
             ]
         )
-        asyncio.run(run_build(options, Printer(stream=io.StringIO()), client=FixtureClient()))
+        asyncio.run(_fixture_build(options))
 
         assert captured["cover_url"] is None
 
@@ -968,7 +1014,7 @@ class TestRunBuildWithMetadata:
             def __init__(self, *args, **kwargs) -> None:
                 pass
 
-            async def fetch_all(self, tasks, book_slug):
+            async def fetch_all(self, tasks, book_ref):
                 return []
 
             async def fetch_cover(self, cover_url):
@@ -996,7 +1042,7 @@ class TestRunBuildWithMetadata:
                 str(tmp_path / "b.epub"),
             ]
         )
-        asyncio.run(run_build(options, Printer(stream=io.StringIO()), client=FixtureClient()))
+        asyncio.run(_fixture_build(options))
 
         assert captured["cover_url"] is None
         assert any("999999" in note and "без обложки" in note for note in captured["notes"])

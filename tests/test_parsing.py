@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from ranobelib_epub.models import Book, Cover
-from ranobelib_epub.source.parsing import (
+from ranobelib_epub.sources.ranobelib.parsing import (
     parse_author,
     parse_book,
     parse_branches,
@@ -278,7 +278,7 @@ class TestParseChapterContent:
     def test_attachment_absolute_url_uses_site_origin(self) -> None:
         content = parse_chapter_content(load("chapter_images.json"))
 
-        url = content.attachments[0].absolute_url()
+        url = content.attachments[0].absolute_url("https://ranobelib.me")
 
         assert url.startswith("https://ranobelib.me/uploads/ranobe/94231/chapters/3422985/")
 

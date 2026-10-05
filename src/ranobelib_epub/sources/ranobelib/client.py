@@ -19,13 +19,17 @@ from typing import Any
 
 import httpx
 
-from ..models import DEFAULT_API_BASE, DEFAULT_SITE_ID, DEFAULT_SITE_ORIGIN
+from ..base import DEFAULT_RATE_LIMIT, NotFoundError, SourceError
+from .media import SITE_ORIGIN
+
+#: Базовый адрес API и `Site-Id` площадки RanobeLib (site-specific данные модуля).
+DEFAULT_API_BASE = "https://api.cdnlibs.org/api"
+DEFAULT_SITE_ID = 3
 
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
-DEFAULT_RATE_LIMIT = 4.0
 
 
-class ApiError(RuntimeError):
+class ApiError(SourceError):
     """Базовая ошибка обращения к API."""
 
 
@@ -37,7 +41,7 @@ class WafBlockedError(ApiError):
     """
 
 
-class BookNotFoundError(ApiError):
+class BookNotFoundError(ApiError, NotFoundError):
     """Ответ `404` — книги или главы нет."""
 
 
@@ -92,7 +96,7 @@ class ClientConfig:
 
     base_url: str = DEFAULT_API_BASE
     site_id: int = DEFAULT_SITE_ID
-    origin: str = DEFAULT_SITE_ORIGIN
+    origin: str = SITE_ORIGIN
     rate_limit: float = DEFAULT_RATE_LIMIT
     retries: int = 3
     timeout: float = 30.0

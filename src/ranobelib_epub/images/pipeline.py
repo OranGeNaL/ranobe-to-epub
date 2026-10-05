@@ -24,18 +24,6 @@ from PIL import Image
 from ..models import Attachment, MissingImage
 from .presets import DEFAULT_PRESET, PRESETS
 
-#: Origin сайта: файлы иллюстраций лежат на нём, а не на хосте API.
-SITE_ORIGIN = "https://ranobelib.me"
-
-#: Заголовки, без которых CDN отдаёт 403 на `/uploads/`.
-IMAGE_HEADERS = {
-    "Referer": f"{SITE_ORIGIN}/",
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    ),
-}
-
 #: Значения по умолчанию равны пресету `medium` — единый источник истины в presets.py.
 _MEDIUM = PRESETS[DEFAULT_PRESET]
 DEFAULT_MAX_WIDTH = _MEDIUM.max_width
@@ -90,10 +78,11 @@ def collect_image_keys(document: dict | None) -> list[str]:
     return keys
 
 
-def absolute_url(attachment: Attachment | dict, origin: str = SITE_ORIGIN) -> str:
+def absolute_url(attachment: Attachment | dict, origin: str) -> str:
     """Абсолютный URL файла: путь из `attachments` с префиксом origin.
 
-    Уже абсолютный URL не переписывается, чтобы не ломать зеркала и CDN.
+    Уже абсолютный URL не переписывается, чтобы не ломать зеркала и CDN. Origin
+    принадлежит сайту-источнику и передаётся явно.
     """
     url = attachment["url"] if isinstance(attachment, dict) else attachment.url
     if not url:
@@ -103,7 +92,7 @@ def absolute_url(attachment: Attachment | dict, origin: str = SITE_ORIGIN) -> st
     return f"{origin.rstrip('/')}/{url.lstrip('/')}"
 
 
-def build_url_from_key(key: str, extension: str = "jpg", origin: str = SITE_ORIGIN) -> str:
+def build_url_from_key(key: str, origin: str, extension: str = "jpg") -> str:
     """Резервный URL, когда у вложения нет `url`.
 
     Без реального пути к файлу построить его нельзя, поэтому функция честно
@@ -296,14 +285,6 @@ def mark_missing(
 ) -> MissingImage:
     """Запись о недоступном изображении для отчёта (8.5)."""
     return MissingImage(chapter_label=chapter_label, reference=reference, url=url, reason=reason)
-
-
-async def fetch_image(client: object, url: str) -> bytes:
-    """Скачивает иллюстрацию с заголовками CDN (Referer и User-Agent обязательны)."""
-    getter = getattr(client, "get_bytes", None)
-    if getter is None:
-        raise TypeError("клиент должен уметь отдавать байты: нет get_bytes")
-    return await getter(url, headers=IMAGE_HEADERS)
 
 
 def filter_and_compress(

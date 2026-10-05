@@ -18,9 +18,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..convert.html import html_to_document
-from ..models import Attachment, Book, Chapter, ChapterContent, Cover, TranslationBranch
-from .numbering import apply_numbering
+from ...convert.html import html_to_document
+from ...models import Attachment, Book, Chapter, ChapterContent, Cover, TranslationBranch
+from ...numbering import apply_numbering
 
 #: Язык, который проставляется в `dc:language`, когда сайт не отдал `inLanguage`.
 DEFAULT_LANGUAGE = "ru"

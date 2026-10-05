@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ranobelib_epub.models import Chapter
-from ranobelib_epub.source.numbering import apply_numbering, assign_labels, chapter_label
+from ranobelib_epub.numbering import apply_numbering, assign_labels, chapter_label
 
 
 def chapter(chapter_id: int, volume: int | str, number: str, sec: int | None = None) -> Chapter:
