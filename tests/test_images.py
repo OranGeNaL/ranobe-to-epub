@@ -13,8 +13,6 @@ from ranobelib_epub.convert.tiptap import convert_document
 from ranobelib_epub.images.pipeline import (
     DEFAULT_MAX_MB,
     DEFAULT_MAX_WIDTH,
-    IMAGE_HEADERS,
-    SITE_ORIGIN,
     absolute_url,
     assign_filenames,
     attachment_key,
@@ -28,6 +26,7 @@ from ranobelib_epub.images.pipeline import (
     resolve_attachments,
     should_compress,
 )
+from ranobelib_epub.sources.ranobelib.media import IMAGE_HEADERS, SITE_ORIGIN
 
 FIXTURES = Path(__file__).parent / "fixtures"
 REAL_PNG = FIXTURES / "image_2210x1582.png"
@@ -61,7 +60,7 @@ class TestJoining:
         chapter = _chapter(images_fixture)
         attachment = resolve_attachments(chapter)["8ef3d556-d13b-4709-90bb-6520828aafb5"]
 
-        url = absolute_url(attachment)
+        url = absolute_url(attachment, SITE_ORIGIN)
 
         assert url == (
             "https://ranobelib.me/uploads/ranobe/94231/chapters/3422985/"
@@ -69,7 +68,10 @@ class TestJoining:
         )
 
     def test_absolute_url_keeps_absolute_input(self) -> None:
-        assert absolute_url({"url": "https://cdn.example/x.png"}) == "https://cdn.example/x.png"
+        assert (
+            absolute_url({"url": "https://cdn.example/x.png"}, SITE_ORIGIN)
+            == "https://cdn.example/x.png"
+        )
 
     def test_attachment_key_accepts_both_field_names(self) -> None:
         assert attachment_key({"image": "uuid"}) == "uuid"
@@ -87,7 +89,7 @@ class TestJoining:
         for node in _all_image_nodes(chapter):
             for key in image_keys(node):
                 assert key in index, f"{key} не найден во вложениях главы"
-                assert absolute_url(index[key]).startswith(SITE_ORIGIN)
+                assert absolute_url(index[key], SITE_ORIGIN).startswith(SITE_ORIGIN)
 
 
 class TestCompression:

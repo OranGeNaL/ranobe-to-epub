@@ -1,8 +1,8 @@
 """Модели предметной области.
 
-Единственный контракт между слоем сайта (`source`), сборкой EPUB (`epub`, `prosemirror`,
-`images`, `charset`) и интерфейсом (`tui`, `cli`). Ни одна из этих частей не должна
-импортировать что-либо из `source`, кроме моделей.
+Единственный контракт между слоями источников (`sources`), сборкой EPUB (`epub`,
+`prosemirror`, `images`, `charset`) и интерфейсом (`tui`, `cli`). Ни одна из этих частей
+не должна импортировать конкретный модуль-источник, кроме моделей и контракта.
 """
 
 from __future__ import annotations
@@ -10,10 +10,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any
-
-DEFAULT_SITE_ID = 3
-DEFAULT_SITE_ORIGIN = "https://ranobelib.me"
-DEFAULT_API_BASE = "https://api.cdnlibs.org/api"
 
 #: Фиксированный набор языков для метаданных (решение 6 design.md).
 LANGUAGE_CODES: tuple[str, ...] = ("ru", "en", "ja", "zh", "ko", "de", "fr", "es", "it", "pt")
@@ -160,7 +156,7 @@ class Chapter:
     `number` хранится дословно строкой: сайт отдаёт дробные значения (`22.5`) для
     побочных историй, и любое приведение к `int` потеряло бы уровень иерархии.
     `label` — вычисленный номер `{volume}.{number}`, назначается функцией
-    `source.numbering.assign_labels` с учётом коллизий.
+    `ranobelib_epub.numbering.assign_labels` с учётом коллизий.
     """
 
     id: int
@@ -194,8 +190,12 @@ class Attachment:
     width: int | None = None
     height: int | None = None
 
-    def absolute_url(self, origin: str = DEFAULT_SITE_ORIGIN) -> str:
-        """Абсолютный URL: host'ы imglib/cdnlibs для этих путей отдают 404."""
+    def absolute_url(self, origin: str) -> str:
+        """Абсолютный URL: host'ы imglib/cdnlibs для этих путей отдают 404.
+
+        Origin принадлежит сайту-источнику, поэтому передаётся явно, а не берётся из
+        общей константы.
+        """
         if self.url.startswith(("http://", "https://")):
             return self.url
         return f"{origin.rstrip('/')}{self.url}"

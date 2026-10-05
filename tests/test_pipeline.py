@@ -25,7 +25,7 @@ from ranobelib_epub.pipeline.report import (
     Progress,
     ReportRecorder,
 )
-from ranobelib_epub.source.translations import Coverage
+from ranobelib_epub.translations import Coverage
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -77,6 +77,22 @@ class FakeSource:
                 ],
             },
         )
+
+    def chapter_unavailable_reason(self, chapter):
+        from ranobelib_epub.sources.ranobelib.api import chapter_unavailable_reason
+
+        return chapter_unavailable_reason(chapter)
+
+    def describe_failure(self, error, *, ref=""):
+        from ranobelib_epub.sources.ranobelib.api import describe_failure
+
+        return describe_failure(error, ref=ref)
+
+    def resource_url(self, url):
+        return url
+
+    async def fetch_resource(self, url):
+        raise RuntimeError("иллюстрации не используются в этих тестах")
 
 
 class TestReportFields:
@@ -269,7 +285,7 @@ class TestPartialBuild:
 
         chapters = [chapter(index) for index in range(1, 101)]
         results = asyncio.run(
-            downloader.fetch_all([ChapterTask(item) for item in chapters], book_slug="slug")
+            downloader.fetch_all([ChapterTask(item) for item in chapters], book_ref="slug")
         )
 
         assert len(results) == 97, "EPUB должен содержать 97 глав"
@@ -286,7 +302,7 @@ class TestPartialBuild:
         downloader = ChapterDownloader(source, recorder, concurrency=4)
 
         chapters = [chapter(index) for index in range(1, 11)]
-        asyncio.run(downloader.fetch_all([ChapterTask(c) for c in chapters], book_slug="slug"))
+        asyncio.run(downloader.fetch_all([ChapterTask(c) for c in chapters], book_ref="slug"))
 
         assert source.calls.count(5) == 1
         assert len(source.calls) == 10
@@ -301,7 +317,7 @@ class TestPartialBuild:
         free = chapter(2)
 
         results = asyncio.run(
-            downloader.fetch_all([ChapterTask(paid), ChapterTask(free)], book_slug="slug")
+            downloader.fetch_all([ChapterTask(paid), ChapterTask(free)], book_ref="slug")
         )
 
         assert source.calls == [2], "к платной главе запроса не было"
@@ -314,7 +330,7 @@ class TestPartialBuild:
         downloader = ChapterDownloader(source, recorder)
         orphan = Chapter(id=1, volume=1, number="1", name="Глава")
 
-        results = asyncio.run(downloader.fetch_all([ChapterTask(orphan)], book_slug="slug"))
+        results = asyncio.run(downloader.fetch_all([ChapterTask(orphan)], book_ref="slug"))
 
         assert results == []
         assert source.calls == []
@@ -331,7 +347,7 @@ class TestConcurrencyAndThrottling:
 
         chapters = [chapter(index) for index in range(1, 21)]
         results = asyncio.run(
-            downloader.fetch_all([ChapterTask(c) for c in chapters], book_slug="slug")
+            downloader.fetch_all([ChapterTask(c) for c in chapters], book_ref="slug")
         )
 
         assert len(results) == 20
@@ -339,7 +355,7 @@ class TestConcurrencyAndThrottling:
 
     def test_rate_limit_interval_is_shared(self) -> None:
         """Троттлинг живёт в клиенте, поэтому параллелизм не обходит лимит (3.5)."""
-        from ranobelib_epub.source.client import RateLimiter
+        from ranobelib_epub.sources.ranobelib.client import RateLimiter
 
         limiter = RateLimiter(4.0)
 
@@ -352,7 +368,7 @@ class TestConcurrencyAndThrottling:
 
         chapters = [chapter(index) for index in range(1, 11)]
         results = asyncio.run(
-            downloader.fetch_all([ChapterTask(c) for c in chapters], book_slug="slug")
+            downloader.fetch_all([ChapterTask(c) for c in chapters], book_ref="slug")
         )
 
         assert [item.chapter.id for item in results] == list(range(1, 11))
@@ -367,7 +383,7 @@ class TestConcurrencyAndThrottling:
             cancel.set()
             return await downloader.fetch_all(
                 [ChapterTask(c) for c in (chapter(i) for i in range(1, 21))],
-                book_slug="slug",
+                book_ref="slug",
                 cancel=cancel,
             )
 
@@ -521,7 +537,7 @@ class TestProgress:
         )
 
         chapters = [chapter(index) for index in range(1, 6)]
-        asyncio.run(downloader.fetch_all([ChapterTask(c) for c in chapters], book_slug="slug"))
+        asyncio.run(downloader.fetch_all([ChapterTask(c) for c in chapters], book_ref="slug"))
 
         built = [p.done for p in seen if p.last_event is not None]
         assert built == [1, 2, 3, 4, 5]
@@ -613,7 +629,7 @@ class TestOrderedJournal:
 
         chapters = [chapter(index) for index in range(1, 4)]
         results = asyncio.run(
-            downloader.fetch_all([ChapterTask(c) for c in chapters], book_slug="slug")
+            downloader.fetch_all([ChapterTask(c) for c in chapters], book_ref="slug")
         )
 
         assert [event.position for event in events] == [1, 2, 3]
@@ -631,7 +647,7 @@ class TestOrderedJournal:
         downloader = ChapterDownloader(source, recorder, concurrency=1, on_progress=updates.append)
 
         chapters = [chapter(index) for index in range(1, 4)]
-        asyncio.run(downloader.fetch_all([ChapterTask(c) for c in chapters], book_slug="slug"))
+        asyncio.run(downloader.fetch_all([ChapterTask(c) for c in chapters], book_ref="slug"))
 
         fetch_only = [p for p in updates if p.last_event is None]
         assert [p.fetched for p in fetch_only] == [0, 1, 2, 3]
@@ -649,7 +665,7 @@ class TestOrderedJournal:
         downloader = ChapterDownloader(source, recorder, concurrency=8, on_progress=collect)
 
         chapters = [chapter(index) for index in range(1, 736)]
-        asyncio.run(downloader.fetch_all([ChapterTask(c) for c in chapters], book_slug="slug"))
+        asyncio.run(downloader.fetch_all([ChapterTask(c) for c in chapters], book_ref="slug"))
 
         assert len(events) == 735
         assert [event.position for event in events] == list(range(1, 736))

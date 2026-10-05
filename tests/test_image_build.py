@@ -53,6 +53,30 @@ class FakeSource:
     async def fetch_chapter_content(self, slug, chapter, branch_id):
         return self.contents[chapter.id]
 
+    def resource_url(self, url: str) -> str:
+        from ranobelib_epub.sources.ranobelib.media import SITE_ORIGIN
+
+        if not url:
+            return ""
+        if url.startswith(("http://", "https://")):
+            return url
+        return f"{SITE_ORIGIN.rstrip('/')}/{url.lstrip('/')}"
+
+    async def fetch_resource(self, url: str) -> bytes:
+        from ranobelib_epub.sources.ranobelib.media import IMAGE_HEADERS
+
+        return await self.client.get_bytes(url, headers=IMAGE_HEADERS)
+
+    def chapter_unavailable_reason(self, chapter):
+        from ranobelib_epub.sources.ranobelib.api import chapter_unavailable_reason
+
+        return chapter_unavailable_reason(chapter)
+
+    def describe_failure(self, error, *, ref=""):
+        from ranobelib_epub.sources.ranobelib.api import describe_failure
+
+        return describe_failure(error, ref=ref)
+
 
 def chapter(index: int, label: str | None = None) -> Chapter:
     return Chapter(
@@ -107,7 +131,7 @@ class TestImageDownload:
         recorder = ReportRecorder(total_chapters=1)
         downloader = ChapterDownloader(source, recorder, max_image_mb=1e-9)
 
-        results = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
+        results = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_ref="slug"))
 
         item = results[0]
         assert item.fragment.count("<img") == 1
@@ -135,7 +159,7 @@ class TestImageDownload:
 
         results = asyncio.run(
             downloader.fetch_all(
-                [ChapterTask(chapter(1)), ChapterTask(chapter(2))], book_slug="slug"
+                [ChapterTask(chapter(1)), ChapterTask(chapter(2))], book_ref="slug"
             )
         )
 
@@ -162,7 +186,7 @@ class TestImageDownload:
         recorder = ReportRecorder(total_chapters=1)
         downloader = ChapterDownloader(source, recorder, max_image_mb=1e-9)
 
-        results = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
+        results = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_ref="slug"))
 
         item = results[0]
         assert len(item.assets) == 1
@@ -187,7 +211,7 @@ class TestImageDownload:
             downloader = ChapterDownloader(source, ReportRecorder(total_chapters=2))
             results = asyncio.run(
                 downloader.fetch_all(
-                    [ChapterTask(chapter(1)), ChapterTask(chapter(2))], book_slug="slug"
+                    [ChapterTask(chapter(1)), ChapterTask(chapter(2))], book_ref="slug"
                 )
             )
             return [asset.filename for item in results for asset in item.assets]
@@ -200,7 +224,7 @@ class TestImageDownload:
         recorder = ReportRecorder(total_chapters=1)
         downloader = ChapterDownloader(source, recorder)
 
-        results = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
+        results = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_ref="slug"))
 
         assert "изображение недоступно" in results[0].fragment
         assert results[0].assets == []
@@ -217,7 +241,7 @@ class TestImageDownload:
         recorder = ReportRecorder(total_chapters=1)
         downloader = ChapterDownloader(source, recorder)
 
-        results = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
+        results = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_ref="slug"))
 
         assert "изображение недоступно" in results[0].fragment
         assert len(recorder.report.missing_images) == 1
@@ -233,7 +257,7 @@ class TestImageDownload:
         downloader = ChapterDownloader(source, recorder)
         task = ChapterTask(chapter(1), include_images=False)
 
-        results = asyncio.run(downloader.fetch_all([task], book_slug="slug"))
+        results = asyncio.run(downloader.fetch_all([task], book_ref="slug"))
 
         assert client.requested == []
         assert 'src="a"' in results[0].fragment
@@ -251,7 +275,7 @@ class TestImageDownload:
             source, recorder, on_progress=lambda p: seen.append(p), max_image_mb=1e-9
         )
 
-        asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
+        asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_ref="slug"))
 
         assert seen[-1].images_total == 1
         assert seen[-1].images_done == 1
@@ -266,7 +290,7 @@ class TestImageDownload:
         recorder = ReportRecorder(total_chapters=1)
         downloader = ChapterDownloader(source, recorder, max_image_mb=1e-9, grayscale=True)
 
-        results = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
+        results = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_ref="slug"))
 
         with Image.open(io.BytesIO(results[0].assets[0].data)) as image:
             assert image.mode == "L"
@@ -298,7 +322,7 @@ class TestCover:
         )
         recorder = ReportRecorder(total_chapters=1)
         downloader = ChapterDownloader(source, recorder, max_image_mb=1e-9)
-        fetched = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
+        fetched = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_ref="slug"))
         book = Book(slug_url="94231--x", cover="/uploads/covers/a.png")
 
         cover = asyncio.run(downloader.fetch_cover(book.cover))
@@ -353,7 +377,7 @@ class TestEpubWithImages:
         )
         recorder = ReportRecorder(total_chapters=1)
         downloader = ChapterDownloader(source, recorder, max_image_mb=1e-9)
-        fetched = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_slug="slug"))
+        fetched = asyncio.run(downloader.fetch_all([ChapterTask(chapter(1))], book_ref="slug"))
         book = Book(slug_url="94231--x", rus_name="Книга", cover="/uploads/covers/c.png")
         cover = asyncio.run(downloader.fetch_cover(book.cover))
 

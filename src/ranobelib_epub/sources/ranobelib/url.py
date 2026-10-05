@@ -9,19 +9,14 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit
 
-from ..models import DEFAULT_SITE_ORIGIN
+from ..base import InvalidBookUrlError
+from .media import SITE_ORIGIN
 
 # `{id}--{slug}`: числовой идентификатор, двудефис, человекочитаемый слаг.
 _SLUG_RE = re.compile(r"^(?P<book_id>\d+)--(?P<slug>[^/?#]+)$")
 _BOOK_PATH_RE = re.compile(r"/book/(?P<slug_url>\d+--[^/?#]+)")
 
-
-class InvalidBookUrlError(ValueError):
-    """Ссылка не указывает на книгу.
-
-    Вызывающий код обязан прерваться до создания сетевого клиента: ни одного запроса
-    к API не выполняется (сценарий «Некорректная ссылка отклоняется»).
-    """
+__all__ = ["InvalidBookUrlError", "parse_book_id", "parse_book_url"]
 
 
 def parse_book_url(url: str) -> str:
@@ -49,7 +44,7 @@ def parse_book_url(url: str) -> str:
     if match is None:
         raise InvalidBookUrlError(
             f"Ссылка {url!r} не указывает на книгу: ожидался путь вида "
-            f"{DEFAULT_SITE_ORIGIN}/book/{{id}}--{{slug}}"
+            f"{SITE_ORIGIN}/book/{{id}}--{{slug}}"
         )
 
     slug_url = match.group("slug_url").rstrip("/")

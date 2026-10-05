@@ -14,8 +14,8 @@ import os
 import httpx
 import pytest
 
-from ranobelib_epub.source.client import ClientConfig, RanobeLibClient
-from ranobelib_epub.source.parsing import parse_book
+from ranobelib_epub.sources.ranobelib.client import ClientConfig, RanobeLibClient
+from ranobelib_epub.sources.ranobelib.parsing import parse_book
 
 CONTRACT_ENV = "RANOBELIB_CONTRACT"
 SLUG = "94231--rezero-kara-hajimeru-isekai-seikatsu-outo-no-ichinichi-hen"

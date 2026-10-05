@@ -1,4 +1,9 @@
-"""Фасад обращения к API: три эндпоинта поверх `RanobeLibClient` (задачи 4.1-4.6)."""
+"""Модуль-источник RanobeLib: реализация контракта `BookSource`.
+
+Модуль владеет всеми данными своего сайта: базовый адрес API, обязательные заголовки,
+origin и заголовки CDN для иллюстраций. Остальные слои получают уже разобранные модели
+и не знают ни про HTTP, ни про формат ответов Mangalib API.
+"""
 
 from __future__ import annotations
 
@@ -6,17 +11,22 @@ from typing import Any
 
 import httpx
 
-from ..models import Book, Chapter, ChapterContent, Cover
+from ...models import Book, Chapter, ChapterContent, Cover, Report
+from ..base import SourceConfig
+from .age import confirm_age, requires_confirmation
 from .client import (
     ApiError,
     ApiUnavailableError,
     AuthorizationRequiredError,
     BookNotFoundError,
+    ClientConfig,
     MissingParameterError,
     RanobeLibClient,
     WafBlockedError,
 )
+from .media import IMAGE_HEADERS, SITE_ORIGIN
 from .parsing import parse_book, parse_chapter_content, parse_chapters, parse_covers
+from .url import parse_book_url
 
 BOOK_PATH = "/manga/{slug_url}"
 CHAPTERS_PATH = "/manga/{slug_url}/chapters"
@@ -34,7 +44,23 @@ NO_BRANCH_REASON = (
 )
 
 
-def unavailable_reason(chapter: Chapter) -> str | None:
+def matches(url: str) -> bool:
+    """Источник RanobeLib поддерживает ссылки на `ranobelib.me`."""
+    return "ranobelib.me" in (url or "").lower()
+
+
+def parse(url: str) -> str:
+    """Разбирает ссылку RanobeLib в `slug_url` без сетевых запросов."""
+    return parse_book_url(url)
+
+
+def create(config: SourceConfig) -> RanobeLibSource:
+    """Собирает рантайм-объект источника с общими сетевыми параметрами."""
+    client = RanobeLibClient(ClientConfig(rate_limit=config.rate_limit, retries=config.retries))
+    return RanobeLibSource(client)
+
+
+def chapter_unavailable_reason(chapter: Chapter) -> str | None:
     """Статическая причина недоступности главы, известная до сетевого запроса.
 
     Проверяется платный доступ (`expired`/`expired_type`). Отдельного обхода нет: глава
@@ -49,12 +75,14 @@ def unavailable_reason(chapter: Chapter) -> str | None:
     return None
 
 
-def describe_failure(error: Exception, *, endpoint: str = "") -> str:
+def describe_failure(error: Exception, *, ref: str = "") -> str:
     """Человекочитаемая причина сбоя получения главы (решение 3).
 
-    Классификация живёт в слое `source`, потому что распознавание HTTP-ошибок требует
-    знания `httpx` и классов клиента; иначе `pipeline` начал бы зависеть от HTTP.
+    Классификация живёт в модуле-источнике, потому что распознавание HTTP-ошибок
+    требует знания `httpx` и классов клиента; иначе `pipeline` начал бы зависеть от HTTP.
+    `ref` — ссылка книги: по ней восстанавливается эндпоинт для сообщения.
     """
+    endpoint = CHAPTER_PATH.format(slug_url=ref) if ref else ""
     target = f" по адресу {endpoint}" if endpoint else ""
 
     if isinstance(error, httpx.TimeoutException):
@@ -86,38 +114,52 @@ def is_authorization_error(exc: Exception) -> bool:
 
 
 class RanobeLibSource:
-    """Три вызова API, которые нужны сборке, и ничего сверх того."""
+    """Реализация контракта `BookSource` для сайта `ranobelib.me`."""
+
+    name = "ranobelib"
 
     def __init__(self, client: RanobeLibClient) -> None:
         self.client = client
 
-    async def fetch_book(self, slug_url: str) -> Book:
-        payload = await self.client.get_json(
-            BOOK_PATH.format(slug_url=slug_url),
-            dict(BOOK_FIELDS),
-        )
+    def parse_url(self, url: str) -> str:
+        return parse_book_url(url)
+
+    def resource_url(self, url: str) -> str:
+        """Абсолютный URL ресурса: относительные пути приписываются к origin сайта."""
+        if not url:
+            return ""
+        if url.startswith(("http://", "https://")):
+            return url
+        return f"{SITE_ORIGIN.rstrip('/')}/{url.lstrip('/')}"
+
+    async def fetch_resource(self, url: str) -> bytes:
+        """Скачивает бинарный ресурс с заголовками CDN своего сайта."""
+        return await self.client.get_bytes(self.resource_url(url), headers=IMAGE_HEADERS)
+
+    async def fetch_book(self, ref: str) -> Book:
+        payload = await self.client.get_json(BOOK_PATH.format(slug_url=ref), dict(BOOK_FIELDS))
         return parse_book(payload)
 
-    async def fetch_chapters(self, slug_url: str) -> list[Chapter]:
+    async def fetch_chapters(self, ref: str) -> list[Chapter]:
         """Весь список глав одним запросом: пагинации на этом эндпоинте нет."""
-        payload = await self.client.get_json(CHAPTERS_PATH.format(slug_url=slug_url))
+        payload = await self.client.get_json(CHAPTERS_PATH.format(slug_url=ref))
         return parse_chapters(payload)
 
-    async def fetch_covers(self, slug_url: str) -> tuple[Cover, ...]:
+    async def fetch_covers(self, ref: str) -> tuple[Cover, ...]:
         """Список обложек карусели; недоступность не прерывает сборку.
 
         Пустой список возвращается и при ошибке эндпоинта, и при отсутствии обложек —
         интерфейс показывает только «обложку по умолчанию» и «без обложки» (решение 2).
         """
         try:
-            payload = await self.client.get_json(COVERS_PATH.format(slug_url=slug_url))
+            payload = await self.client.get_json(COVERS_PATH.format(slug_url=ref))
         except ApiError:
             return ()
         return parse_covers(payload)
 
     async def fetch_chapter_content(
         self,
-        slug_url: str,
+        ref: str,
         chapter: Chapter,
         branch_id: int,
     ) -> ChapterContent:
@@ -126,7 +168,7 @@ class RanobeLibSource:
         `volume` обязателен: без него сервер отвечает `422`.
         """
         payload = await self.client.get_json(
-            CHAPTER_PATH.format(slug_url=slug_url),
+            CHAPTER_PATH.format(slug_url=ref),
             {"volume": chapter.volume, "number": chapter.number, "branch_id": branch_id},
         )
         return parse_chapter_content(
@@ -134,6 +176,24 @@ class RanobeLibSource:
             volume=chapter.volume,
             number=chapter.number,
         )
+
+    def chapter_unavailable_reason(self, chapter: Chapter) -> str | None:
+        return chapter_unavailable_reason(chapter)
+
+    def describe_failure(self, error: Exception, *, ref: str = "") -> str:
+        return describe_failure(error, ref=ref)
+
+    def is_authorization_error(self, error: Exception) -> bool:
+        return is_authorization_error(error)
+
+    def requires_age_confirmation(self, book: Book) -> bool:
+        return requires_confirmation(book)
+
+    def confirm_age(self, book: Book, report: Report | None = None) -> str:
+        return confirm_age(book, report)
+
+    async def aclose(self) -> None:
+        await self.client.aclose()
 
 
 def raw_data(payload: Any) -> dict[str, Any]:

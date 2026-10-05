@@ -877,6 +877,9 @@ class TestConfirmScreen:
             def __init__(self, client) -> None:
                 self.client = client
 
+            def parse_url(self, url: str) -> str:
+                return "94231--rezero"
+
             async def fetch_book(self, slug: str) -> Book:
                 return BOOK
 
@@ -886,8 +889,15 @@ class TestConfirmScreen:
             async def fetch_covers(self, slug: str) -> tuple[Cover, ...]:
                 return COVERS
 
-        monkeypatch.setattr("ranobelib_epub.source.client.RanobeLibClient", FakeClient)
-        monkeypatch.setattr("ranobelib_epub.source.api.RanobeLibSource", FakeSource)
+            async def aclose(self) -> None:
+                return None
+
+        monkeypatch.setattr(
+            "ranobelib_epub.sources.ranobelib.api.RanobeLibClient", FakeClient
+        )
+        monkeypatch.setattr(
+            "ranobelib_epub.sources.ranobelib.api.RanobeLibSource", FakeSource
+        )
 
         meta = await default_load_metadata(LINK, Options(chapters="1-3"))
 

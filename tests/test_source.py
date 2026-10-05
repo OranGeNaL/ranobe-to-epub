@@ -9,14 +9,14 @@ from typing import Any
 import httpx
 import pytest
 
-from ranobelib_epub.source.api import (
+from ranobelib_epub.sources.ranobelib.api import (
     NO_BRANCH_REASON,
     RanobeLibSource,
+    chapter_unavailable_reason,
     describe_failure,
     is_authorization_error,
-    unavailable_reason,
 )
-from ranobelib_epub.source.client import (
+from ranobelib_epub.sources.ranobelib.client import (
     ApiError,
     ApiUnavailableError,
     AuthorizationRequiredError,
@@ -197,7 +197,7 @@ class TestUnavailableChapters:
         chapter.expired_type = 2
         paths.clear()
 
-        reason = unavailable_reason(chapter)
+        reason = chapter_unavailable_reason(chapter)
         content = None if reason else await source.fetch_chapter_content(SLUG, chapter, 20944)
 
         assert reason is not None and "expired_type=2" in reason
@@ -218,16 +218,16 @@ class TestUnavailableChapters:
         assert is_authorization_error(info.value)
         assert len(paths) == 1, "отказ по авторизации не повторяется"
 
-    async def test_regular_chapter_has_no_unavailable_reason(self) -> None:
+    async def test_regular_chapter_has_no_chapter_unavailable_reason(self) -> None:
         source, _ = build_source(fixture_handler("chapters.json"))
         chapters = await source.fetch_chapters(SLUG)
 
-        assert unavailable_reason(chapters[0]) is None
+        assert chapter_unavailable_reason(chapters[0]) is None
 
 
 class TestDescribeFailure:
     def test_timeout_names_endpoint(self) -> None:
-        text = describe_failure(httpx.ReadTimeout("timed out"), endpoint="/manga/x/chapter")
+        text = describe_failure(httpx.ReadTimeout("timed out"), ref="x")
 
         assert "таймаут" in text
         assert "/manga/x/chapter" in text
@@ -281,7 +281,7 @@ class TestStaticReasons:
         chapter = (await source.fetch_chapters(SLUG))[0]
         chapter.expired_type = 2
 
-        reason = unavailable_reason(chapter)
+        reason = chapter_unavailable_reason(chapter)
 
         assert reason is not None
         assert "expired_type=2" in reason

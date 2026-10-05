@@ -17,8 +17,7 @@ from ..epub.naming import sanitize as sanitize_name
 from ..images.pipeline import DEFAULT_MAX_MB, DEFAULT_MAX_WIDTH, DEFAULT_QUALITY
 from ..images.presets import DEFAULT_PRESET, PresetError, preset_names, resolve_settings
 from ..models import LANGUAGE_CODES, Book, Chapter, MetadataOverrides
-from ..source.client import DEFAULT_RATE_LIMIT
-from ..source.translations import DEFAULT_TRANSLATION
+from ..sources import DEFAULT_RATE_LIMIT
 
 PROGRAM = "ranobelib-epub"
 DESCRIPTION = "Скачивает книгу с RanobeLib и собирает из неё EPUB 3"
@@ -196,7 +195,7 @@ class Options:
     grayscale: bool = False
     preset: str | None = None
     charset: str = DEFAULT_PROFILE
-    team: str | None = DEFAULT_TRANSLATION
+    team: str | None = None
     chapters: str | None = None
     rate_limit: float = DEFAULT_RATE_LIMIT
     retries: int = DEFAULT_RETRIES

@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 import pytest
 
-from ranobelib_epub.source.client import (
+from ranobelib_epub.sources.ranobelib.client import (
     ApiError,
     ApiUnavailableError,
     AuthorizationRequiredError,

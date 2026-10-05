@@ -26,24 +26,22 @@ from ..images.pipeline import (
     DEFAULT_MAX_WIDTH,
     DEFAULT_QUALITY,
     ImageAsset,
-    absolute_url,
     chapter_image_href,
     collect_image_keys,
     epub_filename,
-    fetch_image,
 )
 from ..models import Chapter, ChapterContent
-from ..source.api import (
-    CHAPTER_PATH,
-    NO_BRANCH_REASON,
-    RanobeLibSource,
-    describe_failure,
-    unavailable_reason,
-)
-from ..source.translations import Coverage
+from ..sources import BookSource
+from ..translations import Coverage
 from .report import ChapterEvent, DownloadOutcome, Progress, ReportRecorder
 
 DEFAULT_CONCURRENCY = 4
+
+#: Доменное правило: глава без выбранной ветки перевода недоступна.
+NO_BRANCH_REASON = (
+    "у главы нет ветки перевода: ни одна ветка не выбрана или недоступна; "
+    "обход доступа не выполняется"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +70,7 @@ class ChapterDownloader:
 
     def __init__(
         self,
-        source: RanobeLibSource,
+        source: BookSource,
         recorder: ReportRecorder,
         concurrency: int = DEFAULT_CONCURRENCY,
         on_progress: Callable[[Progress], None] | None = None,
@@ -107,7 +105,7 @@ class ChapterDownloader:
         """
         chapter = task.chapter
 
-        static = unavailable_reason(chapter)
+        static = self.source.chapter_unavailable_reason(chapter)
         if static:
             return None, static
 
@@ -117,11 +115,10 @@ class ChapterDownloader:
         async with self.semaphore:
             try:
                 content = await self.source.fetch_chapter_content(
-                    self.book_slug, chapter, chapter.branch_id
+                    self.book_ref, chapter, chapter.branch_id
                 )
             except Exception as error:
-                endpoint = CHAPTER_PATH.format(slug_url=self.book_slug) if self.book_slug else ""
-                return None, describe_failure(error, endpoint=endpoint)
+                return None, self.source.describe_failure(error, ref=self.book_ref)
         return content, None
 
     async def _finalize(self, task: ChapterTask, content: ChapterContent) -> FetchedChapter:
@@ -179,7 +176,7 @@ class ChapterDownloader:
 
         for key in keys:
             attachment = index.get(key)
-            url = absolute_url(attachment) if attachment else ""
+            url = self.source.resource_url(attachment.url) if attachment else ""
             if not attachment or not url:
                 self.recorder.image_missing(url or None, "вложение не найдено", label, key)
                 resolver[key] = ""
@@ -187,7 +184,7 @@ class ChapterDownloader:
                 continue
 
             try:
-                raw = await fetch_image(self.source.client, url)
+                raw = await self.source.fetch_resource(url)
                 digest = hashlib.sha1(raw).digest()
                 cached = self._image_cache.get(digest)
                 if cached is not None:
@@ -199,7 +196,9 @@ class ChapterDownloader:
                     raw, self.max_image_mb, self.max_image_width, self.quality, self.grayscale
                 )
             except Exception as error:
-                self.recorder.image_missing(url, describe_failure(error), label, key)
+                self.recorder.image_missing(
+                    url, self.source.describe_failure(error, ref=self.book_ref), label, key
+                )
                 resolver[key] = ""
                 self.progress.images_done += 1
                 continue
@@ -225,11 +224,11 @@ class ChapterDownloader:
             return None
         if not cover_url:
             return None
-        url = absolute_url({"url": cover_url})
+        url = self.source.resource_url(cover_url)
         if not url:
             return None
         try:
-            raw = await fetch_image(self.source.client, url)
+            raw = await self.source.fetch_resource(url)
             digest = hashlib.sha1(raw).digest()
             cached = self._image_cache.get(digest)
             if cached is not None:
@@ -241,7 +240,9 @@ class ChapterDownloader:
                 raw, self.max_image_mb, self.max_image_width, self.quality, self.grayscale
             )
         except Exception as error:
-            self.recorder.image_missing(url, describe_failure(error), "обложка", "cover")
+            self.recorder.image_missing(
+                url, self.source.describe_failure(error, ref=self.book_ref), "обложка", "cover"
+            )
             return None
         self._image_index += 1
         asset.filename = epub_filename(self._image_index, asset.mime)
@@ -252,12 +253,12 @@ class ChapterDownloader:
             self.on_cover(asset.filename)
         return asset
 
-    book_slug: str = ""
+    book_ref: str = ""
 
     async def fetch_all(
         self,
         tasks: Iterable[ChapterTask],
-        book_slug: str,
+        book_ref: str,
         cancel: asyncio.Event | None = None,
     ) -> list[FetchedChapter]:
         """Все главы по порядку; недоступные не прерывают остальные.
@@ -272,7 +273,7 @@ class ChapterDownloader:
         одно событие `ChapterEvent` на главу — и для собранных, и для недоступных
         (решение 2). Поэтому порядок журнала не зависит от порядка завершения запросов.
         """
-        self.book_slug = book_slug
+        self.book_ref = book_ref
         items = list(tasks)
         self.progress = Progress(total=len(items), _started=time.monotonic())
         self._emit_progress()

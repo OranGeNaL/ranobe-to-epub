@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from ranobelib_epub.models import Book, Report
-from ranobelib_epub.source.age import (
+from ranobelib_epub.sources.ranobelib.age import (
     AGE_RESTRICTIONS,
     confirm_age,
     is_rx,

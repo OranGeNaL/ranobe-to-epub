@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from ranobelib_epub.models import Chapter, TranslationBranch
-from ranobelib_epub.source.parsing import parse_chapters
-from ranobelib_epub.source.translations import (
+from ranobelib_epub.sources.ranobelib.parsing import parse_chapters
+from ranobelib_epub.translations import (
     apply_selection,
     available_teams,
     compute_coverage,

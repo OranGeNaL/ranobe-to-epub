@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from ..models import Chapter, number_sort_key
+from .models import Chapter, number_sort_key
 
 
 def chapter_label(volume: int | str, number: int | str) -> str:

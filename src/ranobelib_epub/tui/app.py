@@ -57,10 +57,16 @@ from ..models import (
     apply_overrides,
     resolve_cover_url,
 )
+from ..numbering import assign_labels, sort_chapters
 from ..pipeline.downloader import coverage_note
 from ..pipeline.report import ChapterEvent, Progress, ReportRecorder
-from ..source.translations import available_teams, compute_coverage
-from ..source.url import InvalidBookUrlError, parse_book_url
+from ..sources import (
+    BookSource,
+    SourceError,
+    create_source,
+    resolve_source,
+)
+from ..translations import available_teams, compute_coverage
 
 DEFAULT_OPTION = "__default__"
 DEFAULT_LABEL = "Актуальная ветка (по умолчанию)"
@@ -83,12 +89,17 @@ def _preset_choices() -> list[tuple[str, str]]:
 
 @dataclass(slots=True)
 class Metadata:
-    """Книга и её главы, полученные до выбора перевода."""
+    """Книга и её главы, полученные до выбора перевода.
+
+    `source` — открытый источник книги, из которого пришли данные: им пользуются
+    превью обложек и сборка, чтобы не создавать клиент заново.
+    """
 
     book: Book
     chapters: list[Chapter]
     slug: str = ""
     covers: tuple[Cover, ...] = ()
+    source: BookSource | None = None
 
 
 @dataclass(slots=True)
@@ -104,6 +115,7 @@ class BuildPlan:
     cover_id: int | None = None
     cover_disabled: bool = False
     covers: tuple[Cover, ...] = ()
+    source: BookSource | None = None
 
 
 ProgressSink = Callable[[Progress], None]
@@ -181,13 +193,44 @@ class ExporterApp(App[None]):
         self.progress_queue: asyncio.Queue[Progress] = asyncio.Queue()
         self.save_partial = save_partial
         self.preview_cache: dict[str, Image.Image] = {}
-        self.fetch_preview = fetch_preview or default_fetch_preview(self.options)
+        self._preview_impl = fetch_preview
         self.supports_terminal_images = supports_terminal_images or default_terminal_supports_images
         self._load = load_metadata or default_load_metadata
         self._build = build or default_build
 
     def on_mount(self) -> None:
         self.push_screen(LinkScreen())
+
+    async def on_unmount(self) -> None:
+        """Закрывает источник книги, открытый при загрузке метаданных."""
+        if self.metadata is not None and self.metadata.source is not None:
+            await self.metadata.source.aclose()
+
+    async def fetch_preview(self, url: str | None) -> Image.Image | None:
+        """Превью обложки: подменённая реализация либо загрузка через источник."""
+        if self._preview_impl is not None:
+            return await self._preview_impl(url)
+        return await self._fetch_preview(url)
+
+    async def _fetch_preview(self, url: str | None) -> Image.Image | None:
+        """Загружает изображение через источник книги, не блокируя выбор обложки."""
+        if not url:
+            return None
+        source = self.metadata.source if self.metadata is not None else None
+        if source is None:
+            return None
+        absolute = source.resource_url(url)
+        if not absolute:
+            return None
+        try:
+            raw = await source.fetch_resource(absolute)
+        except Exception:
+            return None
+        try:
+            with Image.open(io.BytesIO(raw)) as opened:
+                return opened.copy()
+        except Exception:
+            return None
 
     async def load_metadata(self, link: str, options: Options | None = None) -> Metadata:
         metadata = await self._load(link, options or self.options)
@@ -208,6 +251,7 @@ class ExporterApp(App[None]):
             cover_id=self.cover_id,
             cover_disabled=self.cover_disabled,
             covers=self.metadata.covers,
+            source=self.metadata.source,
         )
         return await self._build(plan, on_progress, on_notice)
 
@@ -247,8 +291,8 @@ class LinkScreen(Screen[None]):
     def _submit(self) -> None:
         link = self.query_one("#link", Input).value
         try:
-            parse_book_url(link)
-        except InvalidBookUrlError as error:
+            resolve_source(link).parse(link)
+        except SourceError as error:
             self._show_error(str(error))
             return
         self._show_error("")
@@ -909,72 +953,44 @@ def default_terminal_supports_images() -> bool:
     return AutoRenderable is SixelRenderable or AutoRenderable is TGPRenderable
 
 
-def default_fetch_preview(options: Options) -> PreviewFetch:
-    """Боевая загрузка превью обложки: байты по URL → `PIL.Image` (решение 2 design.md).
-
-    Возвращает `None` при пустом URL, недоступном изображении или ошибке сети —
-    интерфейс показывает заглушку, не блокируя выбор обложки.
-    """
-
-    async def fetch(url: str | None) -> Image.Image | None:
-        from ..cli.main import build_config
-        from ..images.pipeline import absolute_url, fetch_image
-        from ..source.client import RanobeLibClient
-
-        if not url:
-            return None
-        absolute = absolute_url({"url": url})
-        if not absolute:
-            return None
-        client = RanobeLibClient(build_config(options))
-        try:
-            raw = await fetch_image(client, absolute)
-        except Exception:
-            return None
-        finally:
-            await client.aclose()
-        try:
-            with Image.open(io.BytesIO(raw)) as opened:
-                return opened.copy()
-        except Exception:
-            return None
-
-    return fetch
-
-
 async def default_load_metadata(link: str, options: Options) -> Metadata:
-    """Боевая загрузка метаданных: клиент создаётся и закрывается здесь же."""
-    from ..cli.main import build_config
-    from ..source.api import RanobeLibSource
-    from ..source.client import RanobeLibClient
-    from ..source.numbering import assign_labels, sort_chapters
+    """Боевая загрузка метаданных: открытый источник сохраняется в `Metadata`.
 
-    slug = parse_book_url(link)
-    client = RanobeLibClient(build_config(options))
+    Источник не закрывается здесь: им пользуются превью обложек и сборка, а закрывает
+    его приложение при завершении работы.
+    """
+    from ..cli.main import build_config
+
+    source = create_source(link, build_config(options))
     try:
-        source = RanobeLibSource(client)
-        book = await source.fetch_book(slug)
-        chapters = await source.fetch_chapters(slug)
-        covers = await source.fetch_covers(slug)
-    finally:
-        await client.aclose()
+        ref = source.parse_url(link)
+        book = await source.fetch_book(ref)
+        chapters = await source.fetch_chapters(ref)
+        covers = await source.fetch_covers(ref)
+    except Exception:
+        await source.aclose()
+        raise
 
     assign_labels(chapters)
     chapters = sort_chapters(chapters)
-    return Metadata(book=book, chapters=chapters, slug=slug, covers=covers)
+    return Metadata(book=book, chapters=chapters, slug=ref, covers=covers, source=source)
 
 
 async def default_build(
     plan: BuildPlan, on_progress: ProgressSink, on_notice: NoticeSink
 ) -> ReportRecorder:
-    """Боевая сборка: тот же код, что и в неинтерактивном режиме."""
-    from ..cli.main import build_config, write_epub
+    """Боевая сборка: тот же код, что и в неинтерактивном режиме.
+
+    Источник приходит в плане и принадлежит приложению, поэтому здесь он не закрывается.
+    """
+    from ..cli.main import write_epub
     from ..images.pipeline import ImageAsset
     from ..pipeline.downloader import ChapterDownloader, ChapterTask
-    from ..source.age import confirm_age, requires_confirmation
-    from ..source.api import RanobeLibSource
-    from ..source.client import RanobeLibClient
-    from ..source.translations import apply_selection
+    from ..translations import apply_selection
+
+    source = plan.source
+    if source is None:
+        raise RuntimeError("источник книги не загружен")
 
     options = plan.options
     chapters = plan.chapters
@@ -984,8 +1000,8 @@ async def default_build(
     coverage = compute_coverage(chapters, plan.team)
     if coverage.is_partial:
         on_notice(coverage_note(coverage))
-    if requires_confirmation(plan.book):
-        on_notice(confirm_age(plan.book, recorder.report))
+    if source.requires_age_confirmation(plan.book):
+        on_notice(source.confirm_age(plan.book, recorder.report))
 
     effective_book = apply_overrides(plan.book, plan.overrides)
     cover_url = resolve_cover_url(plan.book, plan.covers, plan.cover_id, plan.cover_disabled)
@@ -996,40 +1012,35 @@ async def default_build(
                 f"выбранная обложка {plan.cover_id} недоступна; EPUB собран без обложки"
             )
 
-    client = RanobeLibClient(build_config(options))
-    try:
-        source = RanobeLibSource(client)
-        downloader = ChapterDownloader(
-            source,
-            recorder,
-            on_progress=on_progress,
-            max_image_mb=options.max_image_mb,
-            max_image_width=options.max_image_width,
-            quality=options.quality,
-            include_images=options.include_images,
-        )
-        tasks = [
-            ChapterTask(chapter, charset=options.charset, include_images=options.include_images)
-            for chapter in chapters
-        ]
-        fetched = await downloader.fetch_all(tasks, book_slug=plan.slug)
-        target = options.output_path_for(effective_book)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        build_date = None
-        if plan.overrides.date:
-            build_date = date.fromisoformat(plan.overrides.date)
-        cover: ImageAsset | None = await downloader.fetch_cover(cover_url)
-        write_epub(
-            target,
-            effective_book,
-            fetched,
-            options,
-            recorder,
-            cover=cover,
-            build_date=build_date,
-        )
-    finally:
-        await client.aclose()
+    downloader = ChapterDownloader(
+        source,
+        recorder,
+        on_progress=on_progress,
+        max_image_mb=options.max_image_mb,
+        max_image_width=options.max_image_width,
+        quality=options.quality,
+        include_images=options.include_images,
+    )
+    tasks = [
+        ChapterTask(chapter, charset=options.charset, include_images=options.include_images)
+        for chapter in chapters
+    ]
+    fetched = await downloader.fetch_all(tasks, book_ref=plan.slug)
+    target = options.output_path_for(effective_book)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    build_date = None
+    if plan.overrides.date:
+        build_date = date.fromisoformat(plan.overrides.date)
+    cover: ImageAsset | None = await downloader.fetch_cover(cover_url)
+    write_epub(
+        target,
+        effective_book,
+        fetched,
+        options,
+        recorder,
+        cover=cover,
+        build_date=build_date,
+    )
 
     return recorder
 
